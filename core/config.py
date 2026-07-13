@@ -1,7 +1,7 @@
 """
 配置加载模块
 负责读取 config.yaml 和密钥信息，提供全局配置访问接口。
-密钥来源优先级：st.secrets（Streamlit Cloud）→ .env 文件（本地开发）。
+密钥来源：.env 文件（本地开发）；ui.py 启动时会将 st.secrets 注入环境变量（Streamlit Cloud）。
 扩展预留：后续可在此处添加 RAG、主题等配置的加载逻辑。
 """
 
@@ -38,8 +38,8 @@ class Settings:
         with open(config_path, "r", encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
 
-        # 读取 API Key：Streamlit Cloud Secrets → .env
-        self.GLM_API_KEY = self._get_api_key()
+        # 读取 API Key（从环境变量，ui.py 启动时已将 st.secrets 注入）
+        self.GLM_API_KEY = os.getenv("GLM_API_KEY", "")
         if not self.GLM_API_KEY:
             raise ValueError(
                 "GLM_API_KEY 未配置。\n"
@@ -49,22 +49,6 @@ class Settings:
 
         # 读取案例文本
         self._case_text = self._load_case_text()
-
-    def _get_api_key(self) -> str:
-        """
-        获取 API Key，按优先级：
-        1. Streamlit Cloud 的 st.secrets
-        2. .env 文件中的 GLM_API_KEY
-        """
-        # 尝试从 Streamlit 的 st.secrets 读取（仅 Streamlit Cloud 环境有效）
-        try:
-            import streamlit as st  # noqa
-            if "GLM_API_KEY" in st.secrets:
-                return st.secrets["GLM_API_KEY"]
-        except Exception:
-            pass
-        # 回退到 .env 文件
-        return os.getenv("GLM_API_KEY", "")
 
     def _load_case_text(self) -> str:
         """加载案例文本"""
