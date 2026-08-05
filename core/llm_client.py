@@ -88,5 +88,55 @@ class LLMClient:
     #     return self.chat(full_messages, **kwargs)
 
 
+class VisionLLMClient:
+    """视觉大模型 API 客户端，封装对智谱 GLM-4.6v-Flash 多模态模型的调用"""
+
+    def __init__(self):
+        self.client = OpenAI(
+            api_key=settings.GLM_V_API_KEY,
+            base_url=settings.vision_model_base_url,
+        )
+        self.model_name = settings.vision_model_name
+
+    def chat(
+        self,
+        messages: list[dict],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+    ) -> str:
+        """发送多模态聊天请求并获取回复"""
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=temperature or settings.vision_model_temperature,
+            max_tokens=max_tokens or settings.vision_model_max_tokens,
+            top_p=top_p or settings.vision_model_top_p,
+        )
+        return response.choices[0].message.content
+
+    def chat_stream(
+        self,
+        messages: list[dict],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+    ):
+        """流式多模态聊天接口，逐 chunk 产出内容"""
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            stream=True,
+            temperature=temperature or settings.vision_model_temperature,
+            max_tokens=max_tokens or settings.vision_model_max_tokens,
+            top_p=top_p or settings.vision_model_top_p,
+        )
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
+
+
 # 全局单例
 llm_client = LLMClient()
+vision_llm_client = VisionLLMClient() if settings.vision_enabled else None

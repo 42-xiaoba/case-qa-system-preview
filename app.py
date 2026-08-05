@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core.llm_client import llm_client
+from core.llm_client import llm_client, vision_llm_client
 from core.prompt_manager import prompt_manager
 
 # 配置日志
@@ -42,13 +42,20 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     """聊天请求"""
     query: str = Field(..., description="用户输入的问题")
-    history: list[dict[str, str]] | None = Field(default=None, description="历史对话记录")
+    history: list[dict] | None = Field(default=None, description="历史对话记录")
 
 
 class ChatResponse(BaseModel):
     """聊天响应"""
     reply: str = Field(..., description="模型回复")
     success: bool = Field(default=True, description="请求是否成功")
+
+
+class VisionChatRequest(BaseModel):
+    """视觉聊天请求（含图片）"""
+    query: str = Field(..., description="用户输入的问题")
+    image: str = Field(..., description="图片的 base64 data URL，如 data:image/png;base64,...")
+    history: list[dict] | None = Field(default=None, description="历史对话记录")
 
 
 # ==================== API 接口 ====================
@@ -124,6 +131,46 @@ async def chat_stream(request: ChatRequest):
                 yield chunk
         except Exception as e:
             logger.error(f"流式请求失败: {e}")
+            yield f"\n\n[错误] {e}"
+
+    return StreamingResponse(generate(), media_type="text/plain")
+
+
+@app.post("/api/chat/vision/stream", tags=["问答"])
+async def chat_vision_stream(request: VisionChatRequest):
+    """
+    视觉聊天问答接口（流式）
+    接收用户问题 + base64 图片，以流式格式返回视觉模型回复
+    """
+    if vision_llm_client is None:
+        async def disabled_gen():
+            yield json.dumps(
+                {"error": "视觉功能未启用，请在 .env 中配置 GLM_V_API_KEY"},
+                ensure_ascii=False,
+            ) + "\n"
+        return StreamingResponse(disabled_gen(), media_type="text/plain")
+
+    try:
+        messages = prompt_manager.build_vision_messages(
+            user_query=request.query,
+            image_data_url=request.image,
+            history=request.history,
+        )
+    except Exception as e:
+        logger.error(f"构建视觉消息失败: {e}")
+
+        async def error_gen():
+            yield json.dumps({"error": str(e)}, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(error_gen(), media_type="text/plain")
+
+    def generate():
+        """同步生成器，逐 chunk 产出文本"""
+        try:
+            for chunk in vision_llm_client.chat_stream(messages):
+                yield chunk
+        except Exception as e:
+            logger.error(f"视觉流式请求失败: {e}")
             yield f"\n\n[错误] {e}"
 
     return StreamingResponse(generate(), media_type="text/plain")

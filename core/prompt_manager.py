@@ -69,6 +69,38 @@ class PromptManager:
         messages.append({"role": "user", "content": user_query})
         return messages
 
+    def build_vision_messages(
+        self,
+        user_query: str,
+        image_data_url: str,
+        history: list | None = None,
+    ) -> list[dict]:
+        """
+        构建含图像的多模态消息列表，供视觉模型 API 调用
+
+        Args:
+            user_query: 用户当前输入的文本问题
+            image_data_url: 图片的 base64 data URL（如 "data:image/png;base64,..."）
+            history: 历史对话记录
+
+        Returns:
+            完整的多模态消息列表
+        """
+        system_prompt = self.build_system_prompt()
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # 添加历史对话（如果有）
+        if history:
+            messages.extend(history)
+
+        # 添加当前用户输入（多模态格式：文本 + 图片）
+        user_content = [
+            {"type": "text", "text": user_query},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]
+        messages.append({"role": "user", "content": user_content})
+        return messages
+
     # ---- 扩展预留：RAG 上下文注入 ----
     # def build_messages_with_rag(self, user_query, retrieved_docs, history=None):
     #     """带 RAG 检索结果的 prompt 构建（预留）"""

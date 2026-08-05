@@ -47,6 +47,9 @@ class Settings:
                 "  - Streamlit Cloud：在 Secrets 管理页面设置 GLM_API_KEY"
             )
 
+        # 读取视觉模型 API Key（可选，未配置时禁用视觉功能）
+        self.GLM_V_API_KEY = os.getenv("GLM_V_API_KEY", "")
+
         # 读取案例文本
         self._case_text = self._load_case_text()
 
@@ -108,6 +111,33 @@ class Settings:
     @property
     def model_top_p(self) -> float:
         return self._config["model"]["top_p"]
+
+    # ---- 视觉模型配置 ----
+
+    @property
+    def vision_enabled(self) -> bool:
+        """视觉功能是否可用（密钥已配置即启用）"""
+        return bool(self.GLM_V_API_KEY)
+
+    @property
+    def vision_model_name(self) -> str:
+        return self._config["vision_model"]["name"]
+
+    @property
+    def vision_model_base_url(self) -> str:
+        return self._config["vision_model"]["base_url"]
+
+    @property
+    def vision_model_temperature(self) -> float:
+        return self._config["vision_model"]["temperature"]
+
+    @property
+    def vision_model_max_tokens(self) -> int:
+        return self._config["vision_model"]["max_tokens"]
+
+    @property
+    def vision_model_top_p(self) -> float:
+        return self._config["vision_model"]["top_p"]
 
     # ---- 服务配置 ----
 
