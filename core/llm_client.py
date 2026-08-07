@@ -139,4 +139,16 @@ class VisionLLMClient:
 
 # 全局单例
 llm_client = LLMClient()
-vision_llm_client = VisionLLMClient() if settings.vision_enabled else None
+
+# 视觉客户端延迟创建（避免模块导入时密钥未就绪导致永久为 None）
+_vision_llm_client = None
+
+
+def get_vision_llm_client():
+    """获取视觉客户端（延迟创建，每次调用都检查密钥是否可用）"""
+    global _vision_llm_client
+    if settings.vision_enabled:
+        if _vision_llm_client is None:
+            _vision_llm_client = VisionLLMClient()
+        return _vision_llm_client
+    return None

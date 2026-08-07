@@ -35,7 +35,7 @@ for _key in ("GLM_API_KEY", "GLM_V_API_KEY"):
         _secrets_errors.append(f"{_key}: {e}")
 
 from core.config import settings
-from core.llm_client import llm_client, vision_llm_client
+from core.llm_client import llm_client, get_vision_llm_client
 from core.prompt_manager import prompt_manager
 
 # ==================== CSS ====================
@@ -368,7 +368,7 @@ def send_vision_chat_stream_direct(query: str, image_data_url: str, history: lis
         user_query=query, image_data_url=image_data_url, history=history or []
     )
     try:
-        for chunk in vision_llm_client.chat_stream(messages):
+        for chunk in get_vision_llm_client().chat_stream(messages):
             yield chunk
     except Exception as e:
         yield f"\n\n[错误] 视觉模型调用失败: {e}"
@@ -433,7 +433,8 @@ with st.sidebar:
 
     # ---- 图片上传（最多1张） ----
     st.markdown("### 🖼️ 添加图片")
-    if vision_llm_client is not None:
+    _vision_client = get_vision_llm_client()
+    if _vision_client is not None:
         # 用计数器作为 uploader key 的一部分，点击"移除"时递增计数器即可强制重置 widget
         if "image_uploader_counter" not in st.session_state:
             st.session_state["image_uploader_counter"] = 0
@@ -560,7 +561,7 @@ with left_col:
                 placeholder = st.empty()
                 base_wait_msg = "⏳ 正在思考你的问题，可能会有些慢，请不要着急"
 
-                if pending_image and vision_llm_client is not None:
+                if pending_image and get_vision_llm_client() is not None:
                     # 有图片：走视觉模型
                     if st.session_state.api_healthy:
                         stream = send_vision_chat_stream_api(prompt, pending_image, history)

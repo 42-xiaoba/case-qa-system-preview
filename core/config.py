@@ -49,8 +49,10 @@ class Settings:
                 "  - Streamlit Cloud：在 Secrets 管理页面设置 GLM_API_KEY"
             )
 
-        # 读取视觉模型 API Key（可选，未配置时禁用视觉功能）
-        self.GLM_V_API_KEY = self._read_secret("GLM_V_API_KEY")
+        # 视觉模型 API Key 改为动态读取（不固化在单例中）
+        # 原因：Streamlit Cloud 首次启动时 st.secrets 可能未就绪，
+        # 若在 _load() 时固化，后续 rerun 即使读到密钥也无法恢复
+        self._glm_v_api_key_cache = None
 
         # 读取案例文本
         self._case_text = self._load_case_text()
@@ -87,6 +89,12 @@ class Settings:
     def case_text(self) -> str:
         """获取完整案例文本"""
         return self._case_text
+
+    @property
+    def GLM_V_API_KEY(self) -> str:
+        """视觉模型 API Key（动态读取，不固化在单例中）"""
+        # 每次访问都重新读取，确保 Streamlit Cloud rerun 后能拿到最新值
+        return self._read_secret("GLM_V_API_KEY")
 
     @property
     def config(self) -> dict:
