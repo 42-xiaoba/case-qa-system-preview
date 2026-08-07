@@ -32,6 +32,7 @@ try:
 except Exception:
     pass
 
+from core.config import settings
 from core.llm_client import llm_client, vision_llm_client
 from core.prompt_manager import prompt_manager
 
@@ -477,12 +478,19 @@ with st.sidebar:
             '<p style="color: #2ecc71; font-size: 1.1rem; text-align: center;">✅ 连接正常</p>',
             unsafe_allow_html=True,
         )
+    elif settings.GLM_API_KEY:
+        # 后端不可达但密钥已配置 → 直连模式正常
+        st.markdown(
+            '<p style="color: #2ecc71; font-size: 1.1rem; text-align: center;">✅ 连接正常</p>',
+            unsafe_allow_html=True,
+        )
+        st.caption("直连模式")
     else:
         st.markdown(
             '<p style="color: #e74c3c; font-size: 1.1rem; text-align: center;">❌ 连接异常</p>',
             unsafe_allow_html=True,
         )
-        st.caption("已切换至直连模式")
+        st.caption("请配置 API Key")
     st.markdown("---")
 
     st.markdown(

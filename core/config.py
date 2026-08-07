@@ -38,8 +38,10 @@ class Settings:
         with open(config_path, "r", encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
 
-        # 读取 API Key（从环境变量，ui.py 启动时已将 st.secrets 注入）
-        self.GLM_API_KEY = os.getenv("GLM_API_KEY", "")
+        # 读取 API Key
+        # 优先从环境变量读取（ui.py 启动时已将 st.secrets 注入环境变量），
+        # 环境变量为空时兜底从 st.secrets 直接读取（防止注入失败）
+        self.GLM_API_KEY = self._read_secret("GLM_API_KEY")
         if not self.GLM_API_KEY:
             raise ValueError(
                 "GLM_API_KEY 未配置。\n"
@@ -48,7 +50,7 @@ class Settings:
             )
 
         # 读取视觉模型 API Key（可选，未配置时禁用视觉功能）
-        self.GLM_V_API_KEY = os.getenv("GLM_V_API_KEY", "")
+        self.GLM_V_API_KEY = self._read_secret("GLM_V_API_KEY")
 
         # 读取案例文本
         self._case_text = self._load_case_text()
@@ -60,6 +62,24 @@ class Settings:
             raise FileNotFoundError(f"案例文件不存在: {case_path}")
         with open(case_path, "r", encoding="utf-8") as f:
             return f.read()
+
+    @staticmethod
+    def _read_secret(key: str) -> str:
+        """
+        读取密钥：优先从环境变量，环境变量为空时兜底从 st.secrets 读取。
+        这样即使 ui.py 的环境变量注入失败，也能从 st.secrets 直接获取。
+        """
+        value = os.getenv(key, "")
+        if value:
+            return value
+        # 兜底：尝试从 Streamlit secrets 直接读取
+        try:
+            import streamlit as st
+            if key in st.secrets:
+                return st.secrets[key]
+        except Exception:
+            pass
+        return ""
 
     # ---- 以下为便捷属性 ----
 
