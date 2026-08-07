@@ -22,15 +22,17 @@ st.set_page_config(
 )
 
 # ==================== 密钥注入 ====================
-try:
-    if "GLM_API_KEY" in st.secrets:
-        import os
-        os.environ["GLM_API_KEY"] = st.secrets["GLM_API_KEY"]
-    if "GLM_V_API_KEY" in st.secrets:
-        import os
-        os.environ["GLM_V_API_KEY"] = st.secrets["GLM_V_API_KEY"]
-except Exception:
-    pass
+# 从 st.secrets 读取并注入环境变量（Streamlit Cloud 部署用）
+# 用 try-except 逐个读取，避免某个 key 缺失导致全部注入失败
+import os as _os
+_secrets_errors = []
+for _key in ("GLM_API_KEY", "GLM_V_API_KEY"):
+    try:
+        _val = st.secrets[_key]
+        if _val:
+            _os.environ[_key] = str(_val).strip()
+    except Exception as e:
+        _secrets_errors.append(f"{_key}: {e}")
 
 from core.config import settings
 from core.llm_client import llm_client, vision_llm_client
@@ -317,7 +319,7 @@ GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我�
 
 **4. 对话管理**
 - 左侧栏「🗑️ 清空对话」：清空当前所有对话记录，重新开始
-- 左侧栏底部「📡 连接状态」：显示当前与后端服务的连接情况，✅ 表示正常，❌ 表示异常（会自动切换至直连模式）
+- 左侧栏底部「📡 连接状态」：显示当前的连接情况，✅ 表示正常，❌ 表示异常
 
 ---
 
@@ -458,7 +460,18 @@ with st.sidebar:
             st.caption("可选：上传图片后使用视觉模型回答")
     else:
         st.warning("⚠️ 视觉功能未启用")
-        st.caption("请在 .env 中配置 GLM_V_API_KEY")
+        # 诊断信息：帮助定位密钥读取失败的原因
+        _v_key_env = bool(_os.environ.get("GLM_V_API_KEY"))
+        _v_key_secret = False
+        try:
+            _v_key_secret = bool(st.secrets.get("GLM_V_API_KEY"))
+        except Exception:
+            pass
+        st.caption(f"环境变量 GLM_V_API_KEY: {'✅ 已读取' if _v_key_env else '❌ 未读取'}")
+        st.caption(f"st.secrets GLM_V_API_KEY: {'✅ 已读取' if _v_key_secret else '❌ 未读取'}")
+        if _secrets_errors:
+            st.caption(f"注入异常: {'; '.join(_secrets_errors)}")
+        st.caption("请在 Secrets 中配置 GLM_V_API_KEY")
 
     if st.button("🗑️ 清空对话", use_container_width=True):
         st.session_state.messages = [
@@ -495,7 +508,7 @@ with st.sidebar:
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智能案例问答系统 v0.2.0<br>技术支持：<br>文本：GLM-4.7-Flash<br>视觉：GLM-4.6v-Flash</div>",
+        "智能案例问答系统 v0.2.1<br>技术支持：<br>文本：GLM-4.7-Flash<br>视觉：GLM-4.6v-Flash</div>",
         unsafe_allow_html=True,
     )
 
