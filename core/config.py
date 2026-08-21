@@ -140,6 +140,11 @@ class Settings:
     def model_top_p(self) -> float:
         return self._config["model"]["top_p"]
 
+    @property
+    def model_thinking(self) -> bool:
+        """是否开启深度思考（glm-4.7 系列为混合推理模型，默认关闭以保证非流式调用有正文输出）"""
+        return bool(self._config.get("model", {}).get("thinking", False))
+
     # ---- 视觉模型配置 ----
 
     @property
@@ -177,15 +182,17 @@ class Settings:
     def fastapi_port(self) -> int:
         return self._config["server"]["fastapi_port"]
 
-    # ---- 扩展预留接口 ----
+    # ---- RAG / 记忆配置 ----
 
-    # def get_rag_config(self) -> dict:
-    #     """获取 RAG 配置（预留）"""
-    #     return self._config.get("rag", {})
+    @property
+    def rag_config(self) -> dict:
+        """获取 RAG 配置（kb/chunks.json 路径、预算、top_k、tier 权重等）"""
+        return self._config.get("rag", {})
 
-    # def get_theme_config(self) -> dict:
-    #     """获取主题配置（预留）"""
-    #     return self._config.get("theme", {})
+    @property
+    def memory_config(self) -> dict:
+        """获取对话记忆配置（滑动窗口、压缩阈值等）"""
+        return self._config.get("memory", {})
 
     def get(self, key: str, default: Any = None) -> Any:
         """通用配置获取方法"""

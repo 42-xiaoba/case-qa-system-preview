@@ -14,7 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core.llm_client import llm_client, vision_llm_client
+from core.llm_client import llm_client, get_vision_llm_client
+from core.memory import prepare as memory_prepare
+from core.pipeline import build_answer_messages_routed
 from core.prompt_manager import prompt_manager
 
 # 配置日志
@@ -49,6 +51,8 @@ class ChatResponse(BaseModel):
     """聊天响应"""
     reply: str = Field(..., description="模型回复")
     success: bool = Field(default=True, description="请求是否成功")
+    sources: list[str] | None = Field(default=None, description="本次注入的检索块章节来源")
+    route: dict | None = Field(default=None, description="路由分类信息（类型+改写后查询）")
 
 
 class VisionChatRequest(BaseModel):
@@ -88,15 +92,21 @@ async def get_pdf():
 async def chat(request: ChatRequest):
     """
     聊天问答接口（非流式）
-    接收用户问题，返回基于案例的智能回答
+    完整管线：记忆压缩 → 路由分类/追问改写 → 检索 → 预算制组装 → 生成
     """
     try:
-        messages = prompt_manager.build_messages(
-            user_query=request.query,
-            history=request.history,
+        windowed, summary = memory_prepare(request.history or [], None)
+        messages, docs, route = build_answer_messages_routed(
+            request.query,
+            history=windowed,
+            history_summary=summary or None,
         )
         reply = llm_client.chat(messages)
-        return ChatResponse(reply=reply)
+        return ChatResponse(
+            reply=reply,
+            sources=[f"tier{d.get('tier')}·{d.get('section', '')}" for d in docs],
+            route={"type": route.get("type"), "rewritten_query": route.get("rewritten_query")},
+        )
     except Exception as e:
         logger.error(f"聊天请求失败: {e}")
         return ChatResponse(
@@ -112,9 +122,11 @@ async def chat_stream(request: ChatRequest):
     接收用户问题，以 SSE 格式流式返回模型回复
     """
     try:
-        messages = prompt_manager.build_messages(
-            user_query=request.query,
-            history=request.history,
+        windowed, summary = memory_prepare(request.history or [], None)
+        messages, _docs, _route = build_answer_messages_routed(
+            request.query,
+            history=windowed,
+            history_summary=summary or None,
         )
     except Exception as e:
         logger.error(f"构建消息失败: {e}")
@@ -142,6 +154,7 @@ async def chat_vision_stream(request: VisionChatRequest):
     视觉聊天问答接口（流式）
     接收用户问题 + base64 图片，以流式格式返回视觉模型回复
     """
+    vision_llm_client = get_vision_llm_client()
     if vision_llm_client is None:
         async def disabled_gen():
             yield json.dumps(

@@ -34,7 +34,6 @@ for _key in ("GLM_API_KEY", "GLM_V_API_KEY"):
     except Exception as e:
         _secrets_errors.append(f"{_key}: {e}")
 
-from core.config import settings
 from core.llm_client import llm_client, get_vision_llm_client
 from core.prompt_manager import prompt_manager
 
@@ -75,6 +74,7 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
     section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInstructions"],
     section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"],
+    section[data-testid="stSidebar"] [data-testid="stRadio"],
     section[data-testid="stSidebar"] .stCaption {
         opacity: 0;
         transition: opacity 0.25s ease 0.05s;
@@ -89,6 +89,7 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"]:hover [data-testid="stFileUploaderDropzone"],
     section[data-testid="stSidebar"]:hover [data-testid="stFileUploaderDropzoneInstructions"],
     section[data-testid="stSidebar"]:hover [data-testid="stBaseButton-secondary"],
+    section[data-testid="stSidebar"]:hover [data-testid="stRadio"],
     section[data-testid="stSidebar"]:hover .stCaption {
         opacity: 1;
         pointer-events: auto;
@@ -120,6 +121,13 @@ CUSTOM_CSS = """
     }
     section[data-testid="stSidebar"]:hover::after {
         opacity: 0;
+    }
+
+    /* 文档选择：当前展示的文档选项高亮标注 */
+    section[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
+        background: rgba(88, 166, 255, 0.18);
+        border-radius: 6px;
+        box-shadow: inset 0 0 0 1px rgba(88, 166, 255, 0.45);
     }
 
     /* ========== 整页固定：禁止页面级滚动 ========== */
@@ -285,6 +293,12 @@ def load_custom_css():
 
 API_BASE_URL = "http://localhost:8000"
 
+# 右侧 PDF 预览的文档映射：选项名 → 根目录文件名
+DOC_FILES = {
+    "选题报告": "case_report.pdf",
+    "案例报告（一稿）": "清华案例分析报告一稿.pdf",
+}
+
 
 def check_api_health() -> bool:
     """检查后端服务是否正常运行"""
@@ -311,15 +325,14 @@ GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我�
 **2. 图片识别问答（视觉）**
 点击左侧栏「🖼️ 添加图片」上传图片（支持 PNG/JPG/WebP/GIF，每次最多1张），然后输入问题即可让我识别图片内容并回答。适合上传案例中的图表、流程图、截图等视觉内容提问。
 
-**3. PDF 案例报告预览**
-右侧栏展示案例报告 PDF，支持以下操作：
+**3. PDF 文档预览**
+右侧栏展示文档 PDF，可在左侧栏「📄 选择文档」中切换「选题报告」/「案例报告（一稿）」，当前展示的文档会高亮标注。支持以下操作：
 - 滚动鼠标滚轮：上下翻阅 PDF 内容
 - 点击「➕」/「➖」按钮：放大或缩小 PDF
 - 按住 Shift + 滚动鼠标滚轮：横向滚动放大后的 PDF
 
 **4. 对话管理**
 - 左侧栏「🗑️ 清空对话」：清空当前所有对话记录，重新开始
-- 左侧栏底部「📡 连接状态」：显示当前的连接情况，✅ 表示正常，❌ 表示异常
 
 ---
 
@@ -327,9 +340,17 @@ GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我�
 
 
 def send_chat_request_stream_direct(query: str, history: list | None = None):
-    """直连模式流式生成器"""
+    """直连模式流式生成器（记忆压缩 → 路由 → 检索 → 预算制组装）"""
     yield _WAITING_MSG
-    messages = prompt_manager.build_messages(user_query=query, history=history or [])
+    windowed, new_summary = memory_prepare(
+        history or [], st.session_state.get("history_summary")
+    )
+    st.session_state["history_summary"] = new_summary
+    messages, _docs, _route = build_answer_messages_routed(
+        query,
+        history=windowed,
+        history_summary=new_summary or None,
+    )
     try:
         for chunk in llm_client.chat_stream(messages):
             yield chunk
@@ -458,7 +479,6 @@ with st.sidebar:
                 st.rerun()
         else:
             st.session_state.pop("pending_image", None)
-            st.caption("可选：上传图片后使用视觉模型回答")
     else:
         st.warning("⚠️ 视觉功能未启用")
         # 诊断信息：帮助定位密钥读取失败的原因
@@ -483,33 +503,23 @@ with st.sidebar:
         st.rerun()
     st.markdown("---")
 
-    # ---- 连接状态 ----
-    st.markdown("### 📡 连接状态")
-    api_ok = check_api_health()
-    st.session_state.api_healthy = api_ok
-    if api_ok:
-        st.markdown(
-            '<p style="color: #2ecc71; font-size: 1.1rem; text-align: center;">✅ 连接正常</p>',
-            unsafe_allow_html=True,
-        )
-    elif settings.GLM_API_KEY:
-        # 后端不可达但密钥已配置 → 直连模式正常
-        st.markdown(
-            '<p style="color: #2ecc71; font-size: 1.1rem; text-align: center;">✅ 连接正常</p>',
-            unsafe_allow_html=True,
-        )
-        st.caption("直连模式")
-    else:
-        st.markdown(
-            '<p style="color: #e74c3c; font-size: 1.1rem; text-align: center;">❌ 连接异常</p>',
-            unsafe_allow_html=True,
-        )
-        st.caption("请配置 API Key")
+    # ---- 后端健康检查（静默执行，仅用于选择 API/直连模式） ----
+    st.session_state.api_healthy = check_api_health()
+
+    # ---- 选择文档：切换右侧 PDF 预览，选中项高亮标注 ----
+    st.markdown("### 📄 选择文档")
+    active_doc = st.radio(
+        "选择右侧展示的文档",
+        options=list(DOC_FILES.keys()),
+        key="active_doc",
+        label_visibility="collapsed",
+    )
+    st.caption(f"当前展示：{DOC_FILES[active_doc]}")
     st.markdown("---")
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智能案例问答系统 v0.2.1<br>技术支持：<br>文本：GLM-4.7-Flash<br>视觉：GLM-4.6v-Flash</div>",
+        "智能案例问答系统 v0.3.0<br>团队成员：<br>卜天伊 冯思杰 等</div>",
         unsafe_allow_html=True,
     )
 
@@ -556,6 +566,7 @@ with left_col:
                 history = [
                     {"role": m["role"], "content": m["content"]}
                     for m in st.session_state.messages[:-1]
+                    if m["content"] != GREETING_MESSAGE  # 问候语不作为上下文发送
                 ]
 
                 placeholder = st.empty()
@@ -635,10 +646,12 @@ with left_col:
 # ==================== 右栏：PDF 预览（缩放按钮 + Shift 横向滚动） ====================
 
 with right_col:
-    pdf_path = Path(__file__).resolve().parent / "case_report.pdf"
+    # 根据侧栏「选择文档」的选中项切换 PDF（选中项在侧栏高亮标注）
+    active_doc = st.session_state.get("active_doc", "选题报告")
+    pdf_path = Path(__file__).resolve().parent / DOC_FILES.get(active_doc, "case_report.pdf")
 
     if not pdf_path.exists():
-        st.error("❌ 未找到 `case_report.pdf`，请放入项目根目录")
+        st.error(f"❌ 未找到 `{pdf_path.name}`，请放入项目根目录")
     else:
         # 在 PDF 上方放缩放控制条（用 columns 让按钮和 PDF 在同一列）
         zoom_col1, zoom_col2, zoom_col3 = st.columns([1, 1, 6])

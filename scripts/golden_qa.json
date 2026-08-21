@@ -1,0 +1,205 @@
+{
+  "description": "Golden Set 评测集：must_contain=全部必须出现; any_of=多组备选任一组命中即过（组内为可替代表述）; expect_sources=至少出现一个来源标注; forbid=禁止出现（关键数据篡改检测）; critical=true 的题目必须全部通过",
+  "questions": [
+    {
+      "id": "Q01",
+      "category": "一稿优先级",
+      "critical": true,
+      "q": "这个案例的分析框架是什么？",
+      "must_contain": ["交易成本", "技术执行"],
+      "any_of": [["任务-技术匹配", "TTF"]],
+      "expect_sources": ["一稿"],
+      "forbid": []
+    },
+    {
+      "id": "Q02",
+      "category": "一稿优先级",
+      "critical": false,
+      "q": "一稿提出的路径重构核心思路是什么？",
+      "must_contain": ["制度"],
+      "any_of": [["过滤"], ["台账"], ["权责"]],
+      "expect_sources": ["一稿"],
+      "forbid": []
+    },
+    {
+      "id": "Q03",
+      "category": "一稿优先级",
+      "critical": false,
+      "q": "一稿的实践审思部分提到了哪些结构性壁垒？",
+      "must_contain": ["壁垒"],
+      "any_of": [["数据质量", "权属", "能力", "形式主义"]],
+      "expect_sources": ["一稿"],
+      "forbid": []
+    },
+    {
+      "id": "Q04",
+      "category": "一稿优先级",
+      "critical": false,
+      "q": "选题报告中采用的研究方法有哪些？",
+      "must_contain": [],
+      "any_of": [["访谈"], ["调研"], ["案例分析"], ["文献"]],
+      "expect_sources": ["选题报告"],
+      "forbid": []
+    },
+    {
+      "id": "Q05",
+      "category": "一稿优先级",
+      "critical": false,
+      "q": "三元空间是指哪三个空间？它们之间是什么关系？",
+      "must_contain": ["物理", "社会", "数字"],
+      "any_of": [["闭环", "交互", "融合", "映射"]],
+      "expect_sources": ["一稿"],
+      "forbid": []
+    },
+    {
+      "id": "Q06",
+      "category": "一稿优先级",
+      "critical": false,
+      "q": "一稿如何看待数据权属和二次使用权问题？",
+      "must_contain": ["权属"],
+      "any_of": [["二次使用", "授权", "台账"]],
+      "expect_sources": ["一稿"],
+      "forbid": []
+    },
+    {
+      "id": "Q07",
+      "category": "关键数据",
+      "critical": true,
+      "q": "报表通系统上线后带来了哪些压减效果？请给出具体数据。",
+      "must_contain": ["50%", "61%"],
+      "any_of": [],
+      "expect_sources": [],
+      "forbid": ["40%", "70%", "55%"]
+    },
+    {
+      "id": "Q08",
+      "category": "关键数据",
+      "critical": true,
+      "q": "社区数仓覆盖了武侯区多少个街道和社区？",
+      "must_contain": ["11", "72"],
+      "any_of": [],
+      "expect_sources": [],
+      "forbid": ["12个街道", "70个社区", "80个社区"]
+    },
+    {
+      "id": "Q09",
+      "category": "关键数据",
+      "critical": true,
+      "q": "浆洗街街道的就业帮扶案例中，数据链条的转化成效是怎样的？",
+      "must_contain": ["2476", "15"],
+      "any_of": [["230"], ["31"]],
+      "expect_sources": [],
+      "forbid": ["2470", "2400"]
+    },
+    {
+      "id": "Q10",
+      "category": "关键数据",
+      "critical": true,
+      "q": "数据归集之后，基层报表制作的时间发生了什么变化？",
+      "must_contain": ["半天"],
+      "any_of": [["数周", "几周", "一周"]],
+      "expect_sources": [],
+      "forbid": []
+    },
+    {
+      "id": "Q11",
+      "category": "关键数据",
+      "critical": false,
+      "q": "报表通系统有哪四大功能板块？",
+      "must_contain": ["数据看板", "我要数据", "任务中心"],
+      "any_of": [["数据采集"]],
+      "expect_sources": [],
+      "forbid": []
+    },
+    {
+      "id": "Q12",
+      "category": "关键数据",
+      "critical": true,
+      "q": "基层填表工作量减少了多少？",
+      "must_contain": ["90%"],
+      "any_of": [],
+      "expect_sources": [],
+      "forbid": ["80%", "95%"]
+    },
+    {
+      "id": "Q13",
+      "category": "案例事实",
+      "critical": false,
+      "q": "这个案例涉及哪些政策背景？政策演进的时间线是怎样的？",
+      "must_contain": [],
+      "any_of": [["2019"], ["2025"], ["基层减负"]],
+      "expect_sources": [],
+      "forbid": []
+    },
+    {
+      "id": "Q14",
+      "category": "文献引用",
+      "critical": false,
+      "q": "\"数字悬浮\"这个概念出自哪篇文献？作者是谁？",
+      "must_contain": ["范炜烽"],
+      "any_of": [],
+      "expect_sources": ["范炜烽", "《"],
+      "forbid": []
+    },
+    {
+      "id": "Q15",
+      "category": "文献引用",
+      "critical": false,
+      "q": "任务-技术匹配模型（TTF）是谁提出的？包含哪些匹配因子？",
+      "must_contain": ["Goodhue"],
+      "any_of": [["兼容性"], ["授权"], ["质量"]],
+      "expect_sources": ["Goodhue", "《"],
+      "forbid": []
+    },
+    {
+      "id": "Q16",
+      "category": "文献引用",
+      "critical": false,
+      "q": "交易成本理论中，数据获取的交易成本包括哪四种类型？",
+      "must_contain": ["搜寻", "协商", "执行", "核实"],
+      "any_of": [],
+      "expect_sources": [],
+      "forbid": []
+    },
+    {
+      "id": "Q17",
+      "category": "反幻觉",
+      "critical": true,
+      "q": "案例中社区工作者的平均工资是多少？",
+      "must_contain": [],
+      "any_of": [["未涉及", "未提及", "没有提", "未介绍", "未明确", "资料中未"]],
+      "expect_sources": [],
+      "forbid": ["元"]
+    },
+    {
+      "id": "Q18",
+      "category": "反幻觉",
+      "critical": true,
+      "q": "武侯区2023年的财政收入是多少？",
+      "must_contain": [],
+      "any_of": [["未涉及", "未提及", "没有提", "未介绍", "未明确", "资料中未"]],
+      "expect_sources": [],
+      "forbid": ["亿元"]
+    },
+    {
+      "id": "Q19",
+      "category": "综合应用",
+      "critical": false,
+      "q": "请用交易成本理论解释，报表通为什么能为基层减负？",
+      "must_contain": ["搜寻", "成本"],
+      "any_of": [["核实"], ["协商"], ["执行"]],
+      "expect_sources": ["一稿"],
+      "forbid": []
+    },
+    {
+      "id": "Q20",
+      "category": "综合应用",
+      "critical": false,
+      "q": "这个案例的研究意义是什么？",
+      "must_contain": [],
+      "any_of": [["理论"], ["现实"], ["实践"], ["参考"]],
+      "expect_sources": ["一稿", "选题报告"],
+      "forbid": []
+    }
+  ]
+}
