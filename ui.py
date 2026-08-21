@@ -35,6 +35,8 @@ for _key in ("GLM_API_KEY", "GLM_V_API_KEY"):
         _secrets_errors.append(f"{_key}: {e}")
 
 from core.llm_client import llm_client, get_vision_llm_client
+from core.memory import prepare as memory_prepare
+from core.pipeline import build_answer_messages_routed
 from core.prompt_manager import prompt_manager
 
 # ==================== CSS ====================
@@ -405,7 +407,7 @@ def send_vision_chat_stream_api(query: str, image_data_url: str, history: list |
                 "POST",
                 f"{API_BASE_URL}/api/chat/vision/stream",
                 json=payload,
-                timeout=60,
+                timeout=180,
             ) as resp:
                 resp.raise_for_status()
                 for chunk in resp.iter_bytes():
