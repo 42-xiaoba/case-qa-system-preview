@@ -141,11 +141,30 @@ CUSTOM_CSS = """
         opacity: 0;
     }
 
-    /* 文档选择：当前展示的文档选项高亮标注 */
-    section[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
-        background: rgba(88, 166, 255, 0.18);
-        border-radius: 6px;
-        box-shadow: inset 0 0 0 1px rgba(88, 166, 255, 0.45);
+    /* 文档选择：卡片化样式（点击切换右侧 PDF，当前展示的文档亮框标注） */
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"] {
+        padding: 0.55rem 0.75rem;
+        margin-bottom: 0.5rem;
+        border: 1px solid rgba(110, 118, 129, 0.45);
+        border-radius: 10px;
+        background: rgba(110, 118, 129, 0.10);
+        cursor: pointer;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    }
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"]:hover {
+        border-color: rgba(88, 166, 255, 0.55);
+        background: rgba(88, 166, 255, 0.10);
+    }
+    /* 隐藏原生单选圆点（无文字内容的空壳装饰 div），只保留卡片与标题 */
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"] div:has(> div:empty),
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"] div:empty {
+        display: none !important;
+    }
+    /* 当前展示的文档：发光亮框 */
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"][data-selected="true"] {
+        border-color: #58a6ff;
+        background: rgba(88, 166, 255, 0.15);
+        box-shadow: 0 0 0 1.5px #58a6ff, 0 0 12px rgba(88, 166, 255, 0.45);
     }
 
     /* ========== 整页固定：禁止页面级滚动 ========== */
@@ -903,15 +922,15 @@ with st.sidebar:
     # ---- 后端健康检查（静默执行，仅用于选择 API/直连模式） ----
     st.session_state.api_healthy = check_api_health()
 
-    # ---- 选择文档：切换右侧 PDF 预览，选中项高亮标注 ----
+    # ---- 选择文档：卡片式切换右侧 PDF，当前文档亮框标注 ----
     st.markdown("### 📄 选择文档")
     active_doc = st.radio(
         "选择右侧展示的文档",
         options=list(DOC_FILES.keys()),
         key="active_doc",
         label_visibility="collapsed",
+        format_func=lambda name: ("📑 " if name == "选题报告" else "📝 ") + name,
     )
-    st.caption(f"当前展示：{DOC_FILES[active_doc]}")
     st.markdown("---")
 
     st.markdown(
@@ -1046,41 +1065,24 @@ with right_col:
         # 渲染 PDF
         st.pdf(pdf_path, height=850)
 
-        # 用 CSS 动态缩放 PDF 的 iframe，并启用横向滚动容器
-        # iframe 由 st.pdf 生成，通过 transform: scale() 缩放
-        # 父容器设 overflow-x:auto，配合 Shift+滚轮横向滚动
+        # 用 CSS 动态缩放 PDF，并允许横向滚动
+        # 新版 st.pdf 为 bidi 组件：内容渲染在宿主元素 shadow DOM 的 canvas 上，
+        # 无法用选择器直接命中，因此对宿主 [data-testid="stBidiComponentIsolated"]
+        # 整体做 transform: scale()；缩放超宽时由其元素容器提供横向滚动
+        # （Chrome 原生支持 Shift+滚轮横向滚动可滚动容器）
         pdf_control_html = f"""
         <style>
-            /* PDF iframe 父容器设为可横向滚动 */
-            div[data-testid="column"]:nth-child(2) div[style*="overflow"] {{
+            /* PDF 元素容器设为可横向滚动，容纳放大后的内容 */
+            div[data-testid="stElementContainer"]:has([data-testid="stBidiComponentIsolated"]) {{
                 overflow-x: auto !important;
                 overflow-y: auto !important;
             }}
-            /* 缩放 st.pdf 生成的 iframe */
-            div[data-testid="column"]:nth-child(2) iframe {{
+            /* 缩放 st.pdf 的 bidi 宿主（连带 shadow DOM 内的 canvas） */
+            section[data-testid="stMain"] [data-testid="stBidiComponentIsolated"] {{
                 transform: scale({zoom}) !important;
                 transform-origin: top left !important;
                 width: {100 / zoom}% !important;
             }}
         </style>
-        <script>
-        (function() {{
-            // Shift + 滚轮 → 横向滚动 PDF 容器
-            const pdfCol = document.querySelector('div[data-testid="column"]:nth-child(2)');
-            if (!pdfCol) return;
-            if (pdfCol.dataset.shiftScrollBound === '1') return;
-            pdfCol.dataset.shiftScrollBound = '1';
-
-            pdfCol.addEventListener('wheel', function(e) {{
-                if (e.shiftKey) {{
-                    e.preventDefault();
-                    // 找到可滚动的容器
-                    let scrollable = pdfCol.querySelector('div[style*="overflow"]');
-                    if (!scrollable) scrollable = pdfCol;
-                    scrollable.scrollLeft += e.deltaY;
-                }}
-            }}, {{ passive: false }});
-        }})();
-        </script>
         """
         st.markdown(pdf_control_html, unsafe_allow_html=True)
