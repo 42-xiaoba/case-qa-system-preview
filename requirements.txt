@@ -9,7 +9,8 @@ uvicorn[standard]>=0.30.6
 streamlit[pdf]>=1.58.0
 
 # 智谱 API 调用（使用 OpenAI 兼容接口）
-openai>=1.51.0
+# 大版本上限锁定在已验证的 1.x：只写下限时云端曾解析到未测试的 openai 3.x
+openai>=1.51.0,<2
 
 # 配置文件解析
 pyyaml>=6.0.2
