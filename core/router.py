@@ -10,9 +10,11 @@
 
 快速通道：超短问题（<=6字）且不含指代词 → 跳过 LLM 调用，直接全库检索。
 （中文问题普遍短小，阈值过宽会让路由器形同虚设，故仅放行"报表通是什么"级别的查询。）
+决策缓存：无上下文的分类只取决于问题文本本身，lru_cache 缓存后相同问题零 API 开销。
 JSON 解析失败 / 类型非法 → 兜底全库检索（type=None），保证可用性优先。
 """
 
+import functools
 import json
 import re
 
@@ -21,8 +23,9 @@ from core.llm_client import llm_client
 # 出现即视为可能的追问（需结合上下文）
 PRONOUNS = ("他", "她", "它", "这", "那", "其", "该")
 
-# 分类是 max_tokens=200 的廉价调用，重试次数比常规对话更宽，减少 429 导致的静默兜底
-_ROUTE_RETRIES = 5
+# 分类是 max_tokens=200 的廉价调用；配合快速切换策略（约 1s 短退避），
+# 少量尝试后即兜底全库检索，不再让路由环节长时间阻塞问答主线
+_ROUTE_RETRIES = 2
 
 _ROUTE_PROMPT = """你是查询分类器。只输出 JSON，不要输出任何其他内容：
 {"type": "report|case|literature|followup", "rewritten_query": "改写后的语义完整的独立问题"}
@@ -46,6 +49,32 @@ def _extract_json(text: str) -> dict:
     return json.loads(match.group())
 
 
+def _parse_result(resp_text: str, q: str) -> dict:
+    """解析模型输出为标准路由结果"""
+    data = _extract_json(resp_text)
+    rtype = data.get("type")
+    if rtype not in ("report", "case", "literature", "followup"):
+        rtype = None
+    rewritten = str(data.get("rewritten_query") or q).strip() or q
+    return {"type": rtype, "rewritten_query": rewritten, "fast_path": False}
+
+
+@functools.lru_cache(maxsize=256)
+def _classify_standalone(q: str) -> dict:
+    """无上下文分类（lru_cache 缓存）：结果只取决于问题文本本身，
+    相同问题被不同用户/多轮重复提问时不再消耗任何 API 配额"""
+    resp = llm_client.chat(
+        [
+            {"role": "system", "content": _ROUTE_PROMPT},
+            {"role": "user", "content": f"当前问题：{q}"},
+        ],
+        temperature=0.0,
+        max_tokens=200,
+        retries=_ROUTE_RETRIES,
+    )
+    return _parse_result(resp, q)
+
+
 def classify_query(query: str, history: list | None = None) -> dict:
     """
     对用户问题分类并按需改写
@@ -61,28 +90,28 @@ def classify_query(query: str, history: list | None = None) -> dict:
     if len(q) <= 6 and not any(p in q for p in PRONOUNS):
         return {"type": None, "rewritten_query": q, "fast_path": True}
 
+    if not history:
+        # 无上下文：分类与改写只取决于问题本身 → 走缓存（命中时零 API 调用）
+        try:
+            return dict(_classify_standalone(q))
+        except Exception:
+            # 兜底：分类失败不影响问答，退回全库检索
+            return {"type": None, "rewritten_query": q, "fast_path": False}
+
     messages = [{"role": "system", "content": _ROUTE_PROMPT}]
-    if history:
-        recent = history[-4:]
-        ctx = "\n".join(
-            f"{m['role']}: {str(m.get('content', ''))[:120]}" for m in recent
-        )
-        messages.append(
-            {"role": "user", "content": f"对话历史：\n{ctx}\n\n当前问题：{q}"}
-        )
-    else:
-        messages.append({"role": "user", "content": f"当前问题：{q}"})
+    recent = history[-4:]
+    ctx = "\n".join(
+        f"{m['role']}: {str(m.get('content', ''))[:120]}" for m in recent
+    )
+    messages.append(
+        {"role": "user", "content": f"对话历史：\n{ctx}\n\n当前问题：{q}"}
+    )
 
     try:
         resp = llm_client.chat(
             messages, temperature=0.0, max_tokens=200, retries=_ROUTE_RETRIES
         )
-        data = _extract_json(resp)
-        rtype = data.get("type")
-        if rtype not in ("report", "case", "literature", "followup"):
-            rtype = None
-        rewritten = str(data.get("rewritten_query") or q).strip() or q
-        return {"type": rtype, "rewritten_query": rewritten, "fast_path": False}
+        return _parse_result(resp, q)
     except Exception:
         # 兜底：分类失败不影响问答，退回全库检索
         return {"type": None, "rewritten_query": q, "fast_path": False}

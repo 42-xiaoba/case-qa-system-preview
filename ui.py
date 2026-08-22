@@ -7,10 +7,16 @@ Streamlit 前端界面
 """
 
 import base64
+import codecs
+import json
+import queue
+import re
+import threading
 from pathlib import Path
 
 import httpx
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ==================== 页面配置（必须是第一个 Streamlit 命令） ====================
 
@@ -26,7 +32,7 @@ st.set_page_config(
 # 用 try-except 逐个读取，避免某个 key 缺失导致全部注入失败
 import os as _os
 _secrets_errors = []
-for _key in ("GLM_API_KEY", "GLM_V_API_KEY"):
+for _key in ("GLM_API_KEY", "GLM_V_API_KEY", "OEPNROUTER_API_KEY"):
     try:
         _val = st.secrets[_key]
         if _val:
@@ -34,9 +40,19 @@ for _key in ("GLM_API_KEY", "GLM_V_API_KEY"):
     except Exception as e:
         _secrets_errors.append(f"{_key}: {e}")
 
-from core.llm_client import llm_client, get_vision_llm_client
+from core.llm_client import (
+    llm_client,
+    get_vision_llm_client,
+    ModelFallbackSignal,
+    MODEL_FALLBACK_SIGNAL,
+    API_FALLBACK_MARKER,
+)
 from core.memory import prepare as memory_prepare
-from core.pipeline import build_answer_messages_routed
+from core.pipeline import (
+    FOLLOWUP_TAG,
+    append_followup_instruction,
+    build_answer_messages_routed,
+)
 from core.prompt_manager import prompt_manager
 
 # ==================== CSS ====================
@@ -312,7 +328,11 @@ def check_api_health() -> bool:
         return False
 
 
-_WAITING_MSG = "⏳ 正在思考你的问题，可能会有些慢，请不要着急...\n\n"
+_WAITING_BASE = "⏳ 正在思考你的问题，可能会有些慢，请不要着急"
+_WAITING_BUSY_SUFFIX = "（当前访问量过大，请耐心等待）"
+_WAITING_MSG = _WAITING_BASE + "...\n\n"
+# 主模型首次请求失败（限流/超时触发模型降级）后切换为此提示，末尾三点循环动画不变
+_WAITING_MSG_BUSY = _WAITING_BASE + _WAITING_BUSY_SUFFIX + "...\n\n"
 
 # 初始问候语 + 功能介绍
 GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我提问关于案例的问题。
@@ -341,41 +361,84 @@ GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我�
 💡 **使用提示**：问题越具体，回答越精准。涉及案例中的数据、人物、政策时，建议直接引用相关关键词提问。"""
 
 
-def send_chat_request_stream_direct(query: str, history: list | None = None):
-    """直连模式流式生成器（记忆压缩 → 路由 → 检索 → 预算制组装）"""
+def send_chat_request_stream_direct(
+    query: str,
+    history: list | None = None,
+    notice: dict | None = None,
+    existing_summary: str | None = None,
+    summary_out: dict | None = None,
+):
+    """直连模式流式生成器（记忆压缩 → 路由 → 检索 → 预算制组装）
+
+    notice: 降级通知字典。发生模型降级时置 notice["busy"]=True，
+            前端动画循环据此把等待提示切换为"访问量过大"版本。
+    existing_summary/summary_out: 记忆摘要的传入与传出容器。生成器会在
+            后台线程中执行，不能直接读写 st.session_state，因此由调用方
+            传入当前摘要，并用 summary_out["value"] 带回压缩后的新摘要，
+            由主线程在回答完成时统一写回会话状态。
+    """
     yield _WAITING_MSG
-    windowed, new_summary = memory_prepare(
-        history or [], st.session_state.get("history_summary")
-    )
-    st.session_state["history_summary"] = new_summary
+    windowed, new_summary = memory_prepare(history or [], existing_summary)
+    if summary_out is not None:
+        summary_out["value"] = new_summary
     messages, _docs, _route = build_answer_messages_routed(
         query,
         history=windowed,
         history_summary=new_summary or None,
     )
+    messages = append_followup_instruction(messages)
     try:
         for chunk in llm_client.chat_stream(messages):
+            if isinstance(chunk, ModelFallbackSignal):
+                if notice is not None:
+                    notice["busy"] = True
+                continue
             yield chunk
     except Exception as e:
         yield f"\n\n[错误] 模型调用失败: {e}"
 
 
-def send_chat_request_stream_api(query: str, history: list | None = None):
-    """API 模式流式生成器"""
+def send_chat_request_stream_api(query: str, history: list | None = None, notice: dict | None = None):
+    """API 模式流式生成器
+
+    notice: 降级通知字典。检测到后端发来的降级标记时置 notice["busy"]=True。
+    """
     yield _WAITING_MSG
     payload = {"query": query, "history": history or []}
+    marker = API_FALLBACK_MARKER
+    keep = len(marker) - 1  # 缓存尾部字符，防止标记被字节块边界截断
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    buf = ""
     try:
         with httpx.Client() as client:
             with client.stream(
                 "POST",
                 f"{API_BASE_URL}/api/chat/stream",
                 json=payload,
-                timeout=60,
+                timeout=180,
             ) as resp:
                 resp.raise_for_status()
-                for chunk in resp.iter_bytes():
-                    if chunk:
-                        yield chunk.decode("utf-8")
+                for raw in resp.iter_bytes():
+                    buf += decoder.decode(raw)
+                    while True:
+                        idx = buf.find(marker)
+                        if idx >= 0:
+                            head, buf = buf[:idx], buf[idx + len(marker):]
+                            if head:
+                                yield head
+                            if notice is not None:
+                                notice["busy"] = True
+                            continue
+                        if len(buf) > keep:
+                            yield buf[:-keep]
+                            buf = buf[-keep:]
+                        break
+                try:
+                    buf += decoder.decode(b"", final=True)
+                except Exception:
+                    pass
+                if buf:
+                    yield buf
     except httpx.HTTPStatusError as e:
         yield f"\n\n[错误] 请求失败 (HTTP {e.response.status_code})"
     except httpx.ConnectError:
@@ -390,6 +453,7 @@ def send_vision_chat_stream_direct(query: str, image_data_url: str, history: lis
     messages = prompt_manager.build_vision_messages(
         user_query=query, image_data_url=image_data_url, history=history or []
     )
+    messages = append_followup_instruction(messages)
     try:
         for chunk in get_vision_llm_client().chat_stream(messages):
             yield chunk
@@ -421,8 +485,337 @@ def send_vision_chat_stream_api(query: str, image_data_url: str, history: list |
         yield f"\n\n[错误] {str(e)}"
 
 
-# ==================== 会话状态初始化 ====================
+# ==================== 回答任务：跨 rerun 的流式消费 ====================
+# Streamlit 中任何组件交互（切换PDF、缩放、上传图片等）都会触发脚本整体重跑，
+# 正在进行的回答若依赖单次脚本运行内的循环就会被中断。这里把"消费流"全部
+# 移交后台线程，并把 队列/线程/已累计文本 存入 session_state：
+# 重跑后检测到未完成任务即重建气泡继续渲染，消费完毕再写入消息历史。
 
+# 首个内容块到达后、流式输出期间显示的固定前缀
+_THINKING_PREFIX = "✅ 已完成思考\n\n"
+# 全部内容接收完毕但正文为空时的兜底文案
+_EMPTY_REPLY = "（未获取到回复）"
+
+
+def _start_answer_task(stream, notice=None, summary_out=None, question=None):
+    """启动后台线程完整消费流式生成器，返回存入 session_state 的任务字典"""
+    task = {
+        "queue": queue.Queue(),
+        "thread": None,
+        "text": "",  # 已累计的回答正文（仅主线程在渲染循环中更新）
+        "finished": False,
+        "notice": notice if notice is not None else {"busy": False},
+        "summary_out": summary_out if summary_out is not None else {},
+        "question": question or "",  # 触发本轮回答的用户问题（用于生成延伸问题）
+        # 延伸问题预生成：回答过半即后台提前生成，正式回答完成时通常已就绪，
+        # 卡片随回答完成即时出现；未就绪时 finalize 再短暂等待
+        "fu_thread": None,
+        "fu_result": None,
+    }
+
+    def _fu_worker(partial: str):
+        task["fu_result"] = _generate_followups(task["question"], partial)
+
+    def consume():
+        try:
+            next(stream)  # 丢弃 _WAITING_MSG 占位片段
+            text = ""
+            fu_started = False
+            while True:
+                try:
+                    chunk = next(stream)
+                except StopIteration:
+                    break
+                text += chunk
+                if (
+                    not fu_started
+                    and task["question"]
+                    and len(text) >= 400
+                ):
+                    fu_started = True
+                    task["fu_thread"] = threading.Thread(
+                        target=_fu_worker, args=(text,), daemon=True
+                    )
+                    task["fu_thread"].start()
+                task["queue"].put(("chunk", chunk))
+            task["queue"].put(("done", text))
+        except Exception as e:  # noqa: BLE001
+            task["queue"].put(("error", str(e)))
+
+    task["thread"] = threading.Thread(target=consume, daemon=True)
+    task["thread"].start()
+    return task
+
+
+def _drain_answer_task(task, placeholder):
+    """渲染回答进度直至完成：无内容时播放三点动画，收到内容后增量刷新。
+
+    本循环被组件交互触发的重跑打断时直接随脚本退出，不做任何清理——
+    任务状态在 session_state 中完好，下次运行由恢复分支续接。"""
+    if task["finished"]:
+        placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+        return
+    dots = 0
+    while True:
+        if task["text"]:
+            placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+        else:
+            dots = (dots % 3) + 1
+            base_msg = _WAITING_BASE + _WAITING_BUSY_SUFFIX if task["notice"]["busy"] else _WAITING_BASE
+            placeholder.write(base_msg + "." * dots)
+        try:
+            kind, payload = task["queue"].get(timeout=1.0)
+        except queue.Empty:
+            if not task["thread"].is_alive() and task["queue"].empty():
+                # 线程意外终止且没有产出完成标记的兜底，避免动画永远转圈
+                task["text"] = task["text"] or _EMPTY_REPLY
+                task["finished"] = True
+                placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+                return
+            continue
+        if kind == "chunk":
+            task["text"] += payload
+            placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+        elif kind == "done":
+            task["text"] = payload or task["text"] or _EMPTY_REPLY
+            task["finished"] = True
+            placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+            return
+        else:  # error
+            task["text"] = f"[错误] {payload}"
+            task["finished"] = True
+            placeholder.write(_THINKING_PREFIX + task["text"])
+            return
+
+
+# ==================== 延伸问题（追问卡片） ====================
+
+# 追问建议进程内缓存：key=问题+回答摘要 → {"related","new"}，避免同一问答重复生成浪费配额。
+# 用模块级字典而非 session_state：预生成工作在后台线程中执行，不能触碰 st.session_state
+_FOLLOWUP_CACHE_MAX = 40
+_FOLLOWUP_CACHE: dict = {}
+
+
+def _hide_followup_tail(text: str) -> str:
+    """流式显示时隐藏延伸问题块：截断完整标记及其后内容，
+    并处理被 chunk 切断的标记前缀，避免半截标签闪现"""
+    idx = text.find(FOLLOWUP_TAG)
+    if idx != -1:
+        return text[:idx]
+    for i in range(min(len(FOLLOWUP_TAG) - 1, len(text)), 0, -1):
+        if text.endswith(FOLLOWUP_TAG[:i]):
+            return text[:-i]
+    return text
+
+
+def _parse_followup_tail(text: str):
+    """从全文尾部提取延伸问题块 → (剥离后的正文, followups|None)；
+    无标记或解析失败返回原文与 None（调用方走独立生成兜底）"""
+    idx = text.find(FOLLOWUP_TAG)
+    if idx == -1:
+        return text, None
+    body = text[:idx].rstrip()
+    tail = text[idx + len(FOLLOWUP_TAG):].split("</followups>")[0]
+    m = re.search(r"\{.*\}", tail, re.S)
+    data = json.loads(m.group(0)) if m else {}
+    result = {
+        "related": str(data.get("related", "")).strip()[:60],
+        "new": str(data.get("new", "")).strip()[:60],
+    }
+    if not result["related"] and not result["new"]:
+        return text, None
+    return (body if body.strip() else text), result
+
+
+def _generate_followups(question: str, answer: str):
+    """基于一轮问答生成两个延伸问题：相关话题深入（related）+ 新话题拓展（new）。
+
+    关闭思考模式以缩短延迟；限流/解析失败等异常一律返回 None，
+    前端静默跳过卡片，不影响正常回答展示。"""
+    cache = _FOLLOWUP_CACHE
+    key = f"{question[:100]}|{answer[:200]}"
+    if key in cache:
+        return cache[key]
+    prompt = (
+        "请根据下面这轮问答，生成两个适合用户继续提问的中文问题：\n"
+        '1. "related"：紧扣本次回答内容的延伸追问，帮助用户深入了解细节；\n'
+        '2. "new"：切换到一个与本次话题相关但角度全新的新话题问题，帮助用户拓展视野。\n'
+        '要求：每个问题不超过25个字，独立成句、不使用指代词；只输出 JSON，'
+        '格式为 {"related":"问题一","new":"问题二"}，不要输出任何解释。\n\n'
+        f"【用户问题】{question}\n【助手回答】{answer[:800]}"
+    )
+    try:
+        raw = llm_client.chat(
+            [{"role": "user", "content": prompt}],
+            max_tokens=300,
+            retries=1,
+            # 附加智谱思考控制块：config 中 model.thinking=false 时该块即为
+            # "显式禁用"，防止服务端默认开启思考吃掉 max_tokens 导致正文为空
+            use_thinking=True,
+        )
+        m = re.search(r"\{.*\}", raw, re.S)
+        data = json.loads(m.group(0)) if m else {}
+        result = {
+            "related": str(data.get("related", "")).strip()[:60],
+            "new": str(data.get("new", "")).strip()[:60],
+        }
+        if not result["related"] and not result["new"]:
+            print(f"[followups] 模型输出无法解析出问题: {raw[-120:]!r}", flush=True)
+            return None
+        if len(cache) >= _FOLLOWUP_CACHE_MAX:
+            cache.pop(next(iter(cache)))
+        cache[key] = result
+        return result
+    except Exception as e:
+        print(f"[followups] 生成失败: {type(e).__name__}: {str(e)[:120]}")
+        return None
+
+
+def render_followup_cards(followups: dict):
+    """在回答下方渲染两张可点击的延伸问题小卡片。
+
+    卡片运行在 components.html 的 iframe 中：点击时通过 window.parent 定位
+    页面底部的聊天输入框 textarea，用原生 value setter 写入并派发 input 事件
+    （React 受控组件的标准注入方式），实现"点卡片 → 问题填入输入框"。"""
+    cards = []
+    if followups.get("related"):
+        cards.append(("🔗 相关延伸", followups["related"]))
+    if followups.get("new"):
+        cards.append(("🌱 新话题", followups["new"]))
+    if not cards:
+        return
+
+    data_json = json.dumps([[tag, q] for tag, q in cards], ensure_ascii=False)
+    height = 52 * len(cards) + 16
+    html = f"""
+<div id="fu-wrap"></div>
+<style>
+    #fu-wrap {{ display: flex; flex-direction: column; gap: 8px; padding: 6px 0 2px; }}
+    .fu-card {{
+        display: flex; align-items: center; gap: 8px;
+        border: 1px solid rgba(90, 140, 220, 0.35);
+        border-radius: 10px;
+        background: rgba(90, 140, 220, 0.08);
+        padding: 8px 12px;
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+    }}
+    .fu-card:hover {{
+        background: rgba(90, 140, 220, 0.18);
+        border-color: rgba(90, 140, 220, 0.65);
+        transform: translateY(-1px);
+    }}
+    .fu-card:active {{ transform: translateY(0); opacity: 0.85; }}
+    .fu-tag {{
+        flex-shrink: 0;
+        font-size: 0.72rem;
+        line-height: 1.4;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(90, 140, 220, 0.22);
+        white-space: nowrap;
+    }}
+    .fu-text {{
+        font-size: 0.85rem;
+        line-height: 1.45;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }}
+</style>
+<script>
+(function () {{
+    var data = {data_json};
+    var wrap = document.getElementById("fu-wrap");
+    data.forEach(function (pair) {{
+        var card = document.createElement("div");
+        card.className = "fu-card";
+        var tag = document.createElement("span");
+        tag.className = "fu-tag";
+        tag.textContent = pair[0];
+        var text = document.createElement("span");
+        text.className = "fu-text";
+        text.textContent = pair[1];
+        text.title = pair[1];
+        card.appendChild(tag);
+        card.appendChild(text);
+        card.addEventListener("click", function () {{ fill(pair[1]); }});
+        wrap.appendChild(card);
+    }});
+
+    function fill(q) {{
+        try {{
+            var p = window.parent;
+            if (!p || !p.document) return;
+            // 定位底部聊天输入框：优先官方 testid，失败则取视口最下方的 textarea
+            var ta = p.document.querySelector(
+                '[data-testid="stChatInput"] textarea, [data-testid="stChatInputTextArea"]');
+            if (!ta) {{
+                var best = null, top = -1;
+                p.document.querySelectorAll("textarea").forEach(function (t) {{
+                    var r = t.getBoundingClientRect();
+                    if (r.top > top) {{ top = r.top; best = t; }}
+                }});
+                ta = best;
+            }}
+            if (!ta) return;
+            ta.focus();
+            var setter = Object.getOwnPropertyDescriptor(
+                p.HTMLTextAreaElement.prototype, "value").set;
+            setter.call(ta, q);
+            ta.dispatchEvent(new p.Event("input", {{ bubbles: true }}));
+        }} catch (e) {{ /* 静默失败：不影响回答区 */ }}
+    }}
+}})();
+</script>
+"""
+    components.html(html, height=height, scrolling=False)
+
+
+def _finalize_answer_task():
+    """把完成的回答写入消息历史并清理任务（含记忆摘要写回会话状态）"""
+    task = st.session_state.get("answer_task")
+    if task is None:
+        return
+    new_summary = task.get("summary_out", {}).get("value")
+    if new_summary:
+        st.session_state["history_summary"] = new_summary
+    text = task["text"] or _EMPTY_REPLY
+    # 路径一（零成本）：回答末尾若带有随答延伸块，直接解析剥离（历史正文不含标记）
+    followups = None
+    if text != _EMPTY_REPLY and not text.startswith("[错误]"):
+        clean, parsed = _parse_followup_tail(text)
+        if parsed:
+            followups = parsed
+            text = clean
+    message = {"role": "assistant", "content": text}
+    # 路径二（零等待）：预生成线程在回答期间已启动，此刻通常已完成；
+    # 极少数未完成时最多等 45s（与旧同步兜底耗时同量级），超时放弃本轮卡片
+    if followups is None and task.get("fu_thread") is not None:
+        task["fu_thread"].join(timeout=45)
+        if task.get("fu_result") is not None:
+            followups = task["fu_result"]
+    # 路径三（同步兜底）：回答过短未触发预生成时，才现场补一次独立生成；
+    # 预生成已启动但失败的轮次不再重试，避免限流下双倍等待
+    if (
+        followups is None
+        and text != _EMPTY_REPLY
+        and not text.startswith("[错误]")
+        and task.get("question")
+        and task.get("fu_thread") is None
+    ):
+        followups = _generate_followups(task["question"], text)
+    if followups:
+        message["followups"] = followups
+    st.session_state.messages.append(message)
+    st.session_state.pop("answer_task", None)
+    # 消息循环在本函数之前已执行完毕，新增的延伸问题卡片必须重跑一次才会渲染；
+    # 此时任务已清理，重跑不会再次进入本函数，无死循环风险
+    st.rerun()
+
+
+# ==================== 会话状态初始化 ====================
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": GREETING_MESSAGE}
@@ -501,6 +894,8 @@ with st.sidebar:
             {"role": "assistant", "content": GREETING_MESSAGE}
         ]
         st.session_state.pop("pending_image", None)
+        # 同步丢弃进行中的回答任务：后台线程会自然结束，结果不再写入历史
+        st.session_state.pop("answer_task", None)
         st.session_state["image_uploader_counter"] += 1
         st.rerun()
     st.markdown("---")
@@ -521,7 +916,7 @@ with st.sidebar:
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智能案例问答系统 v0.3.0<br>团队成员：<br>卜天伊 冯思杰 等</div>",
+        "智能案例问答系统 v0.3.1<br>团队成员：<br>卜天伊 冯思杰 等</div>",
         unsafe_allow_html=True,
     )
 
@@ -536,7 +931,7 @@ left_col, right_col = st.columns([0.6, 0.4], gap="medium", vertical_alignment="t
 # ==================== 左栏：AI 问答 ====================
 
 with left_col:
-    st.caption("💬 案例问答 · GLM-4.7-Flash")
+    st.caption("💬 案例问答 · SenseNova 6.8 FlashLite")
 
     # 可滚动聊天容器，固定像素高度
     chat_container = st.container(height=750)
@@ -545,6 +940,18 @@ with left_col:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 render_message_content(msg["content"])
+                if msg.get("followups"):
+                    render_followup_cards(msg["followups"])
+
+    # ---- 恢复未完成的回答：任何组件交互（切换PDF/缩放/上传等）触发重跑后，
+    # 从这里凭 session_state 中的任务续接渲染，直到消费完毕再写入历史 ----
+    pending_task = st.session_state.get("answer_task")
+    if pending_task is not None:
+        with chat_container:
+            with st.chat_message("assistant"):
+                resume_placeholder = st.empty()
+        _drain_answer_task(pending_task, resume_placeholder)
+        _finalize_answer_task()
 
     if prompt := st.chat_input("请输入你的问题，例如：这个案例的研究意义是什么？"):
         pending_image = st.session_state.pop("pending_image", None)
@@ -564,85 +971,45 @@ with left_col:
             with st.chat_message("user"):
                 render_message_content(user_content)
 
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state.messages[:-1]
+            if m["content"] != GREETING_MESSAGE  # 问候语不作为上下文发送
+        ]
+        fallback_notice = {"busy": False}
+        summary_out = {}
+
+        # 选择对应的流式生成器（视觉/文本 × API/直连）
+        if pending_image and get_vision_llm_client() is not None:
+            # 有图片：走视觉模型
+            if st.session_state.api_healthy:
+                stream = send_vision_chat_stream_api(prompt, pending_image, history)
+            else:
+                stream = send_vision_chat_stream_direct(prompt, pending_image, history)
+        else:
+            # 无图片：走文本模型（主模型受限/超时时自动降级到备用模型）
+            if st.session_state.api_healthy:
+                stream = send_chat_request_stream_api(prompt, history, notice=fallback_notice)
+            else:
+                stream = send_chat_request_stream_direct(
+                    prompt,
+                    history,
+                    notice=fallback_notice,
+                    existing_summary=st.session_state.get("history_summary"),
+                    summary_out=summary_out,
+                )
+
+        # 流的消费全部移交后台线程并存入 session_state：
+        # 即使期间用户切换PDF/缩放等触发重跑，回答也会在下一轮运行中续接完成
+        task = _start_answer_task(stream, notice=fallback_notice,
+                                  summary_out=summary_out, question=prompt)
+        st.session_state["answer_task"] = task
+
+        with chat_container:
             with st.chat_message("assistant"):
-                history = [
-                    {"role": m["role"], "content": m["content"]}
-                    for m in st.session_state.messages[:-1]
-                    if m["content"] != GREETING_MESSAGE  # 问候语不作为上下文发送
-                ]
-
-                placeholder = st.empty()
-                base_wait_msg = "⏳ 正在思考你的问题，可能会有些慢，请不要着急"
-
-                if pending_image and get_vision_llm_client() is not None:
-                    # 有图片：走视觉模型
-                    if st.session_state.api_healthy:
-                        stream = send_vision_chat_stream_api(prompt, pending_image, history)
-                    else:
-                        stream = send_vision_chat_stream_direct(prompt, pending_image, history)
-                else:
-                    # 无图片：走文本模型（原有逻辑）
-                    if st.session_state.api_healthy:
-                        stream = send_chat_request_stream_api(prompt, history)
-                    else:
-                        stream = send_chat_request_stream_direct(prompt, history)
-
-                # 后台线程：跳过 _WAITING_MSG 占位，获取第一个真实 chunk（这里会阻塞等待 API 响应）
-                import threading
-                import queue
-                import time
-
-                first_real_chunk_q = queue.Queue()
-
-                def fetch_first_real_chunk():
-                    try:
-                        next(stream)  # 消费掉 _WAITING_MSG 占位（立即返回）
-                        first = next(stream)  # 等待 API 第一个真实 token（阻塞）
-                        first_real_chunk_q.put(("chunk", first))
-                    except StopIteration:
-                        first_real_chunk_q.put(("empty", None))
-                    except Exception as e:
-                        first_real_chunk_q.put(("error", str(e)))
-
-                fetch_thread = threading.Thread(target=fetch_first_real_chunk, daemon=True)
-                fetch_thread.start()
-
-                # 主线程：播放省略号动画，直到第一个真实 chunk 到达
-                dots = 0
-                status = None
-                first_chunk = None
-                while True:
-                    dots = (dots % 3) + 1
-                    placeholder.write(base_wait_msg + "." * dots)
-                    try:
-                        status, first_chunk = first_real_chunk_q.get(timeout=1.0)
-                        break
-                    except queue.Empty:
-                        continue
-
-                fetch_thread.join(timeout=0.5)
-
-                if status == "error":
-                    response_text = f"[错误] {first_chunk}"
-                    placeholder.write("✅ 已完成思考\n\n" + response_text)
-                elif status == "empty":
-                    response_text = "（未获取到回复）"
-                    placeholder.write("✅ 已完成思考\n\n" + response_text)
-                else:
-                    # 第一个真实 chunk 到达，切换为流式回复显示
-                    response_text = first_chunk
-                    placeholder.write("✅ 已完成思考\n\n" + response_text)
-                    for chunk in stream:
-                        response_text += chunk
-                        placeholder.write("✅ 已完成思考\n\n" + response_text)
-
-                    if not response_text:
-                        response_text = "（未获取到回复）"
-                        placeholder.write("✅ 已完成思考\n\n" + response_text)
-
-        st.session_state.messages.append(
-            {"role": "assistant", "content": response_text}
-        )
+                answer_placeholder = st.empty()
+        _drain_answer_task(task, answer_placeholder)
+        _finalize_answer_task()
 
 
 # ==================== 右栏：PDF 预览（缩放按钮 + Shift 横向滚动） ====================

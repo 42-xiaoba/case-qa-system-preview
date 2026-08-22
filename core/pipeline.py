@@ -70,3 +70,40 @@ def build_answer_messages_routed(
         route_type=route["type"],
     )
     return messages, docs, route
+
+
+# ==================== 延伸问题随答输出 ====================
+FOLLOWUP_TAG = "<followups>"
+_FOLLOWUP_INSTRUCTION = (
+    "\n\n【输出格式硬性要求】回答正文结束后，必须另起一行追加延伸问题块，"
+    "格式严格为：\n"
+    '<followups>{"related":"紧扣本次回答内容的延伸追问","new":"切换到相关新角度的话题问题"}'
+    "</followups>\n"
+    "两个问题各不超过25个字，独立成句、不使用指代词；"
+    "该块不属于正文，正文中不得提及它的存在。"
+)
+
+
+def append_followup_instruction(messages: list[dict]) -> list[dict]:
+    """把延伸问题输出指令拼入最后一条用户消息（返回新列表，不改原列表）。
+
+    拼进用户消息而非追加独立的尾部 system 消息：实测 GLM 对消息序列
+    末尾的 system 角色关注度不稳定，随答标记约一半概率被忽略；
+    用户消息末尾是注意力最强的位置，指令遵循率显著更高。
+    兼容多模态消息（content 为分段列表）的情形。"""
+    if not messages or messages[-1].get("role") != "user":
+        return messages + [{"role": "system", "content": _FOLLOWUP_INSTRUCTION}]
+    out = [dict(m) for m in messages]
+    last = dict(out[-1])
+    content = last.get("content")
+    if isinstance(content, list):
+        parts = [dict(p) for p in content]
+        for p in parts:
+            if p.get("type") == "text":
+                p["text"] = p.get("text", "") + _FOLLOWUP_INSTRUCTION
+                break
+        last["content"] = parts
+    else:
+        last["content"] = (content or "") + _FOLLOWUP_INSTRUCTION
+    out[-1] = last
+    return out

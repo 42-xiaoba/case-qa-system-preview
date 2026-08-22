@@ -145,6 +145,26 @@ class Settings:
         """是否开启深度思考（glm-4.7 系列为混合推理模型，默认关闭以保证非流式调用有正文输出）"""
         return bool(self._config.get("model", {}).get("thinking", False))
 
+    @property
+    def model_concurrency(self) -> int:
+        """全局并发闸门上限：智谱免费档按并发数限流，超过的请求排队而非报错"""
+        try:
+            return max(1, int(self._config.get("model", {}).get("concurrency", 1)))
+        except Exception:
+            return 1
+
+    @property
+    def glm_api_keys(self) -> list[str]:
+        """主模型 API Key 列表（多 Key 轮换）：除 GLM_API_KEY 外还识别
+        GLM_API_KEY_2 ~ GLM_API_KEY_5，每把 Key 拥有独立的限流配额"""
+        keys: list[str] = []
+        names = ["GLM_API_KEY"] + [f"GLM_API_KEY_{n}" for n in range(2, 6)]
+        for name in names:
+            value = self._read_secret(name)
+            if value and value not in keys:
+                keys.append(value)
+        return keys or [self.GLM_API_KEY]
+
     # ---- 视觉模型配置 ----
 
     @property
@@ -171,6 +191,99 @@ class Settings:
     @property
     def vision_model_top_p(self) -> float:
         return self._config["vision_model"]["top_p"]
+
+    # ---- 模型降级链配置 ----
+
+    @property
+    def fallback_enabled(self) -> bool:
+        """模型降级链是否启用（主模型受限/超时时自动切换备用模型）"""
+        return bool(self._config.get("fallback", {}).get("enabled", False))
+
+    @property
+    def fallback_openrouter_model(self) -> str:
+        """OpenRouter 备用模型名称"""
+        return self._config.get("fallback", {}).get("openrouter", {}).get("name", "")
+
+    @property
+    def fallback_openrouter_base_url(self) -> str:
+        """OpenRouter 接口地址"""
+        return self._config.get("fallback", {}).get("openrouter", {}).get(
+            "base_url", "https://openrouter.ai/api/v1"
+        )
+
+    @property
+    def fallback_openrouter_api_key(self) -> str:
+        """OpenRouter API Key（动态读取；兼容 .env 中的历史拼写 OEPNROUTER_API_KEY
+        与标准拼写 OPENROUTER_API_KEY）"""
+        cfg = self._config.get("fallback", {}).get("openrouter", {})
+        env_names = [cfg.get("api_key_env"), "OEPNROUTER_API_KEY", "OPENROUTER_API_KEY"]
+        for name in env_names:
+            if not name:
+                continue
+            value = self._read_secret(name)
+            if value:
+                return value
+        return ""
+
+    @property
+    def vision_api_keys(self) -> list[str]:
+        """视觉模型 API Key 列表（多 Key 轮换）：识别 GLM_V_API_KEY 与 GLM_V_API_KEY_2，
+        每把 Key 拥有独立的限流配额"""
+        keys: list[str] = []
+        for name in ["GLM_V_API_KEY", "GLM_V_API_KEY_2"]:
+            value = self._read_secret(name)
+            if value and value not in keys:
+                keys.append(value)
+        return keys or [self.GLM_V_API_KEY]
+
+    @property
+    def ultimate_model(self) -> str:
+        """末位兜底模型名称（glm-4.6v，前序模型全部失效才调用）"""
+        return self._config.get("fallback", {}).get("ultimate", {}).get("name", "glm-4.6v")
+
+    @property
+    def ultimate_base_url(self) -> str:
+        """末位兜底模型接口地址（默认与主模型同为智谱接口）"""
+        cfg = self._config.get("fallback", {}).get("ultimate", {})
+        return cfg.get("base_url") or self.model_base_url
+
+    @property
+    def ultimate_api_key(self) -> str:
+        """末位兜底模型 API Key（动态读取；优先 config 指定变量名，
+        兼容标准拼写 ULTIMATE_API_KEY 与 .env 现用的 GLM_V_API_KEY_3）"""
+        cfg = self._config.get("fallback", {}).get("ultimate", {})
+        env_names = [cfg.get("api_key_env"), "ULTIMATE_API_KEY", "GLM_V_API_KEY_3"]
+        for name in env_names:
+            if not name:
+                continue
+            value = self._read_secret(name)
+            if value:
+                return value
+        return ""
+
+    @property
+    def fallback_sensenova_model(self) -> str:
+        """SenseNova 备用模型名称"""
+        return self._config.get("fallback", {}).get("sensenova", {}).get("name", "")
+
+    @property
+    def fallback_sensenova_base_url(self) -> str:
+        """SenseNova OpenAI 兼容接口地址"""
+        cfg = self._config.get("fallback", {}).get("sensenova", {})
+        return cfg.get("base_url", "https://token.sensenova.cn/v1")
+
+    @property
+    def fallback_sensenova_api_key(self) -> str:
+        """SenseNova API Key（动态读取）"""
+        cfg = self._config.get("fallback", {}).get("sensenova", {})
+        env_names = [cfg.get("api_key_env"), "SENSENOVA_API_KEY"]
+        for name in env_names:
+            if not name:
+                continue
+            value = self._read_secret(name)
+            if value:
+                return value
+        return ""
 
     # ---- 服务配置 ----
 

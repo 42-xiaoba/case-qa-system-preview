@@ -63,6 +63,12 @@ model:
   max_tokens: 2048
   top_p: 0.9
   thinking: false  # 关闭深度思考：混合推理模型的思考token会挤占max_tokens导致非流式回答为空
+  # 全局并发闸门上限：设为 2 允许"回答流式输出"与"延伸问题预生成"并行请求，
+  # 延伸问题卡片可与回答同时就绪；主用 SenseNova 额度充足、无按并发数限流困扰。
+  # 若切回按并发数限流的免费档（如智谱 GLM）出现自致 429 时，可调回 1 让超额请求排队。
+  concurrency: 2
+  # 多 Key 轮换（可选）：在 .env 中追加 GLM_API_KEY_2 / GLM_API_KEY_3 等，
+  # 每把 Key 拥有独立的限流配额，系统会自动将其纳入请求序列轮流使用
 
 # ========== 视觉模型配置 ==========
 vision_model:
@@ -71,6 +77,27 @@ vision_model:
   temperature: 0.7
   max_tokens: 2048
   top_p: 0.9
+
+# ========== 模型降级链配置 ==========
+# 主模型出现限流(429)/超时等异常无法正常工作时，按顺序降级到备用模型：
+# 文本链：sensenova-6.8-flash-lite(主用，额度充足) → glm-4.7-flash(GLM_API_KEY/_2 轮换)
+#         → glm-4.6v-flash(GLM_V_API_KEY/_2 轮换)
+#         → OpenRouter nemotron → glm-4.6v（末位兜底）
+# 视觉链：glm-4.6v-flash(GLM_V_API_KEY/_2 轮换) → sensenova-6.8-flash-lite → glm-4.6v
+fallback:
+  enabled: true
+  sensenova:
+    name: "sensenova-6.8-flash-lite"  # 以商汤控制台显示的模型 ID 为准，不符时只改这里
+    base_url: "https://token.sensenova.cn/v1"
+    api_key_env: "SENSENOVA_API_KEY"
+  openrouter:
+    name: "nvidia/nemotron-3-ultra-550b-a55b:free"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OEPNROUTER_API_KEY"  # .env 中的变量名（历史拼写），代码同时兼容 OPENROUTER_API_KEY
+  ultimate:
+    name: "glm-4.6v"  # 末位兜底模型：前序全部失效才调用
+    base_url: "https://open.bigmodel.cn/api/paas/v4/"
+    api_key_env: "GLM_V_API_KEY_3"
 
 # ========== 服务配置 ==========
 server:
@@ -90,12 +117,13 @@ rag:
   tier_weights:           # 来源可信度权重：自有文档 > 文献汇编
     "1": 1.35
     "2": 1.0
-  budget:                 # 字符预算（防上下文溢出）
-    tier0_chars: 1600     # 常备知识卡上限
-    context_chars: 4200   # 检索块总上限（超限丢弃相关性最低的块）
-    history_chars: 2200   # 历史对话上限（超限丢弃最早对话）
-    summary_chars: 600    # 历史摘要上限
-    total_chars: 12000    # 整个输入的兜底上限
+  budget:                 # 字符预算（防上下文溢出；预算越大 TTFT 越长，
+                          # 已按"首字<10s"目标收紧：prefill 时间随输入长度近线性增长）
+    tier0_chars: 1000     # 常备知识卡上限
+    context_chars: 2400   # 检索块总上限（超限丢弃相关性最低的块）
+    history_chars: 1200   # 历史对话上限（超限丢弃最早对话）
+    summary_chars: 400    # 历史摘要上限
+    total_chars: 7000     # 整个输入的兜底上限
 
 # ========== 对话记忆配置 ==========
 memory:

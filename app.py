@@ -14,9 +14,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core.llm_client import llm_client, get_vision_llm_client
+from core.llm_client import (
+    llm_client,
+    get_vision_llm_client,
+    ModelFallbackSignal,
+    MODEL_FALLBACK_SIGNAL,
+    API_FALLBACK_MARKER,
+)
 from core.memory import prepare as memory_prepare
-from core.pipeline import build_answer_messages_routed
+from core.pipeline import (
+    append_followup_instruction,
+    build_answer_messages_routed,
+)
 from core.prompt_manager import prompt_manager
 
 # 配置日志
@@ -128,6 +137,7 @@ async def chat_stream(request: ChatRequest):
             history=windowed,
             history_summary=summary or None,
         )
+        messages = append_followup_instruction(messages)
     except Exception as e:
         logger.error(f"构建消息失败: {e}")
 
@@ -140,7 +150,11 @@ async def chat_stream(request: ChatRequest):
         """同步生成器，逐 chunk 产出文本"""
         try:
             for chunk in llm_client.chat_stream(messages):
-                yield chunk
+                if isinstance(chunk, ModelFallbackSignal):
+                    # 发生模型降级：向前端发送标记，前端据此切换等待提示
+                    yield API_FALLBACK_MARKER
+                else:
+                    yield chunk
         except Exception as e:
             logger.error(f"流式请求失败: {e}")
             yield f"\n\n[错误] {e}"
@@ -169,6 +183,7 @@ async def chat_vision_stream(request: VisionChatRequest):
             image_data_url=request.image,
             history=request.history,
         )
+        messages = append_followup_instruction(messages)
     except Exception as e:
         logger.error(f"构建视觉消息失败: {e}")
 
