@@ -8,6 +8,7 @@ Streamlit 前端界面
 
 import base64
 import codecs
+import functools
 import json
 import queue
 import re
@@ -326,6 +327,140 @@ def load_custom_css():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
+# 手机端专属样式（仅服务端判定为手机访问时注入，故无需 media 查询包裹）：
+# 输入框钉底避让安全区、聊天区内部滚动、收起侧栏残边归零（选择器已按 Streamlit 1.59 实测 DOM 校准）
+_MOBILE_CSS = """
+<style>
+    /* 输入框固定在视口底部，并避让 iPhone 底部小黑条（safe-area） */
+    section[data-testid="stMain"] div[data-testid="stChatInput"] {
+        position: fixed !important;
+        left: 10px;
+        right: 10px;
+        bottom: calc(env(safe-area-inset-bottom) + 6px);
+        /* 层级压过折叠侧栏 rail 与悬浮组件 */
+        z-index: 999999999;
+    }
+    /* 输入框高度上限：长文本最多加高至此，发送后由动态 key 重挂载自动恢复默认 */
+    section[data-testid="stMain"] div[data-testid="stChatInput"] textarea {
+        max-height: 120px !important;
+    }
+    /* 聊天记录区锁定为视口剩余高度，在容器内部滚动（页面本身不再滚动）
+       注意：选择器必须单行书写，行首 ">" 会被 Markdown 误解析为引用块 */
+    section[data-testid="stMain"] [data-testid="stLayoutWrapper"]:has(> [data-testid="stVerticalBlock"] > [data-testid="stLayoutWrapper"] > [data-testid="stChatMessage"]) {
+        flex-basis: auto !important;
+        height: calc(100vh - 175px) !important;
+        height: calc(100dvh - 175px) !important;
+        min-height: 320px !important;
+        overflow-y: auto !important;
+    }
+    /* 主内容底部留白，防止最后一条消息被固定输入框遮挡 */
+    section[data-testid="stMain"] [data-testid="stMainBlockContainer"],
+    section[data-testid="stMain"] .stMainBlockContainer {
+        padding-bottom: 110px !important;
+    }
+    /* 解锁官方对侧栏宽度的 !important 强制锁定（收起态被锁死为 60px 窄条）：
+       :not([data-state]) 恒真且抬升优先级，胜过官方单属性选择器；
+       解锁后 Streamlit 内联样式中的正确宽度（如 300px）自然生效 */
+    section[data-testid="stSidebar"]:not([data-state]) {
+        width: auto !important;
+        min-width: 0 !important;
+    }
+    /* 侧栏"展开态"统一渲染为全宽面板：Streamlit 从关闭态恢复时只会回弹成
+       60px 窄条（遮挡头像的元凶），这里直接把它撑成正常侧栏，
+       使循环简化为 展开 ⇄ 关闭，全部由左上角双箭头切换。
+       用 html body div.stApp 长链抬高优先级，压过官方 60px 收起态的 !important 规则 */
+    html body div.stApp section[data-testid="stSidebar"][aria-expanded="true"] {
+            width: min(80vw, 300px) !important;
+            max-width: min(80vw, 300px) !important;
+            /* 展开态压过钉底输入框（其 z-index 为 999999999），
+               避免侧栏下部内容被悬浮输入框遮挡；官方侧栏自带 relative 定位 */
+            z-index: 1000000000 !important;
+        }
+        /* 移动 UA 分支下，官方"半开窄条"状态除了锁 section 本身，还会把内容容器
+           锁成极窄宽度并水平居中（真机侧栏文字竖排逐字换行的元凶）。
+           该分支仅在手机 User-Agent 下激活，桌面浏览器模拟无法复现；
+           这里对内容容器同样做全属性解锁，让它铺满已撑大的面板 */
+        html body div.stApp section[data-testid="stSidebar"][aria-expanded="true"] [data-testid="stSidebarContent"] {
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            margin: 0 !important;
+        }
+        /* 官方内容容器的左右 padding 由 JS 测量的滚动条槽位动态推导
+           （padding = max(测量值, 48px - 测量值)）；手机端首次展开时该测量
+           可能得到异常大值，把内容挤压成竖排逐字换行（轻点侧栏触发重测后才
+           恢复正常）。这里将 padding 钳死为固定值，使错误测量彻底失效 */
+        html body div.stApp section[data-testid="stSidebar"][aria-expanded="true"] [data-testid="stSidebarContent"] {
+            padding-left: 14px !important;
+            padding-right: 14px !important;
+        }
+        /* ========== 手机端禁用桌面版"hover 弹出窄条"机制 ==========
+           桌面方案实现方式：侧栏常态锁 60px 窄条 + 全部内容 opacity:0 隐藏 +
+           ::after 伪元素显示竖排提示文字，悬停时才展开并显示内容。
+           手机没有悬停：内容永远隐藏不可点，竖排提示永远浮在展开的侧栏上
+           （轻点一下触发移动端 hover 模拟才恢复）。这里整套还原为正常状态 */
+        /* 1) 解除窄条宽度下限与 overflow 裁剪（宽度本身由 aria-expanded 规则控制） */
+        section[data-testid="stSidebar"] {
+            min-width: 0 !important;
+            overflow: visible !important;
+            transition: none !important;
+        }
+        /* 2) 取消"非悬停隐藏内容"规则：侧栏内容常显可点 */
+        section[data-testid="stSidebar"] .stMarkdown,
+        section[data-testid="stSidebar"] .stButton,
+        section[data-testid="stSidebar"] .stAlert,
+        section[data-testid="stSidebar"] .stFileUploader,
+        section[data-testid="stSidebar"] .stImage,
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInstructions"],
+        section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"],
+        section[data-testid="stSidebar"] [data-testid="stRadio"],
+        section[data-testid="stSidebar"] .stCaption {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+        }
+        /* 3) 移除桌面窄条的竖排提示伪元素与 ☰ 装饰 */
+        section[data-testid="stSidebar"]::after {
+            content: none !important;
+        }
+        section[data-testid="stSidebar"] .sidebar-hamburger {
+            display: none !important;
+        }
+    /* 侧栏收起态彻底归零隐藏，不残留任何遮挡条 */
+    html body div.stApp section[data-testid="stSidebar"][aria-expanded="false"] {
+        width: 0 !important;
+        min-width: 0 !important;
+        max-width: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        overflow: hidden !important;
+    }
+    /* 收起后的展开入口：官方悬浮按钮默认弱化且位置不定，
+           这里固定到左上角并强化为醒目的"双箭头"按钮（图标 keyboard_double_arrow_right），
+           与侧栏内的收起箭头位置呼应，保证手机端收起后仍可一键重新打开侧栏 */
+        [data-testid="stExpandSidebarButton"] {
+            display: flex !important;
+            position: fixed !important;
+            top: calc(env(safe-area-inset-top) + 8px);
+            left: 10px;
+            z-index: 999999999;
+            align-items: center !important;
+            justify-content: center !important;
+            width: 40px !important;
+            height: 40px !important;
+            border-radius: 10px !important;
+            background: rgba(88, 140, 220, 0.28) !important;
+            border: 1px solid rgba(88, 166, 255, 0.55) !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35) !important;
+        }
+        [data-testid="stExpandSidebarButton"]:hover {
+            background: rgba(88, 140, 220, 0.45) !important;
+        }
+</style>
+"""
+
+
 # ==================== 后端 API 配置 ====================
 
 API_BASE_URL = "http://localhost:8000"
@@ -335,6 +470,25 @@ DOC_FILES = {
     "选题报告": "case_report.pdf",
     "案例报告（一稿）": "清华案例分析报告一稿.pdf",
 }
+
+
+@functools.lru_cache(maxsize=8)
+def _load_pdf_bytes(filename: str) -> bytes:
+    """读取根目录下 PDF 字节（手机端下载按钮用），缓存避免每次重跑重复读盘"""
+    return (Path(__file__).resolve().parent / filename).read_bytes()
+
+
+def _is_mobile() -> bool:
+    """服务端检测手机访问：UA 关键字判定；?force_mobile / ?force_desktop 可强制覆盖"""
+    if st.query_params.get("force_desktop"):
+        return False
+    if st.query_params.get("force_mobile"):
+        return True
+    try:
+        ua = st.context.headers.get("User-Agent", "") or ""
+    except Exception:
+        return False
+    return bool(re.search(r"Mobi|Android|iPhone|iPod|Mobile", ua, re.I))
 
 
 def check_api_health() -> bool:
@@ -353,8 +507,23 @@ _WAITING_MSG = _WAITING_BASE + "...\n\n"
 # 主模型首次请求失败（限流/超时触发模型降级）后切换为此提示，末尾三点循环动画不变
 _WAITING_MSG_BUSY = _WAITING_BASE + _WAITING_BUSY_SUFFIX + "...\n\n"
 
-# 初始问候语 + 功能介绍
-GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我提问关于案例的问题。
+# 初始问候语 + 功能介绍（手机端第 3 条为下载说明，桌面端为 PDF 预览说明）
+def _build_greeting(is_mobile: bool) -> str:
+    if is_mobile:
+        item3 = (
+            "**3. 下载 PDF 文档**\n"
+            "在左侧栏「📄 下载文档」中点击对应按钮，即可把《选题报告》或《案例报告（一稿）》"
+            "的 PDF 全文下载到手机本地查看。"
+        )
+    else:
+        item3 = (
+            "**3. PDF 文档预览**\n"
+            "右侧栏展示文档 PDF，可在左侧栏「📄 选择文档」中切换「选题报告」/「案例报告（一稿）」，当前展示的文档会高亮标注。支持以下操作：\n"
+            "- 滚动鼠标滚轮：上下翻阅 PDF 内容\n"
+            "- 点击「➕」/「➖」按钮：放大或缩小 PDF\n"
+            "- 按住 Shift + 滚动鼠标滚轮：横向滚动放大后的 PDF"
+        )
+    return f"""你好！我是智能案例问答助手，请随时向我提问关于案例的问题。
 
 ---
 
@@ -366,11 +535,7 @@ GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我�
 **2. 图片识别问答（视觉）**
 点击左侧栏「🖼️ 添加图片」上传图片（支持 PNG/JPG/WebP/GIF，每次最多1张），然后输入问题即可让我识别图片内容并回答。适合上传案例中的图表、流程图、截图等视觉内容提问。
 
-**3. PDF 文档预览**
-右侧栏展示文档 PDF，可在左侧栏「📄 选择文档」中切换「选题报告」/「案例报告（一稿）」，当前展示的文档会高亮标注。支持以下操作：
-- 滚动鼠标滚轮：上下翻阅 PDF 内容
-- 点击「➕」/「➖」按钮：放大或缩小 PDF
-- 按住 Shift + 滚动鼠标滚轮：横向滚动放大后的 PDF
+{item3}
 
 **4. 对话管理**
 - 左侧栏「🗑️ 清空对话」：清空当前所有对话记录，重新开始
@@ -378,6 +543,16 @@ GREETING_MESSAGE = """你好！我是智能案例问答助手，请随时向我�
 ---
 
 💡 **使用提示**：问题越具体，回答越精准。涉及案例中的数据、人物、政策时，建议直接引用相关关键词提问。"""
+
+
+_GREETING_DESKTOP = _build_greeting(False)
+_GREETING_MOBILE = _build_greeting(True)
+GREETING_MESSAGE = _GREETING_DESKTOP
+
+
+def _greeting_now() -> str:
+    """按当前访问设备返回对应版本的欢迎语"""
+    return _GREETING_MOBILE if _is_mobile() else _GREETING_DESKTOP
 
 
 def send_chat_request_stream_direct(
@@ -709,12 +884,14 @@ def render_followup_cards(followups: dict):
     html = f"""
 <div id="fu-wrap"></div>
 <style>
+    /* iframe 本体透明并使用白色文字：页面为深色主题，卡片直接透出深色背景 */
+    body {{ background: transparent; color: #ffffff; margin: 0; }}
     #fu-wrap {{ display: flex; flex-direction: column; gap: 8px; padding: 6px 0 2px; }}
     .fu-card {{
         display: flex; align-items: center; gap: 8px;
         border: 1px solid rgba(90, 140, 220, 0.35);
         border-radius: 10px;
-        background: rgba(90, 140, 220, 0.08);
+        background: rgba(90, 140, 220, 0.12);
         padding: 8px 12px;
         cursor: pointer;
         user-select: none;
@@ -734,13 +911,15 @@ def render_followup_cards(followups: dict):
         border-radius: 999px;
         background: rgba(90, 140, 220, 0.22);
         white-space: nowrap;
+        color: #dbe7ff;
     }}
+    /* 文字允许自然换行并随内容撑高卡片：修复窄屏上省略号截断、显示不全的问题 */
     .fu-text {{
         font-size: 0.85rem;
         line-height: 1.45;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        color: #ffffff;
+        word-break: break-word;
+        white-space: normal;
     }}
 </style>
 <script>
@@ -786,6 +965,19 @@ def render_followup_cards(followups: dict):
             ta.dispatchEvent(new p.Event("input", {{ bubbles: true }}));
         }} catch (e) {{ /* 静默失败：不影响回答区 */ }}
     }}
+
+    // iframe 高度按实际内容自适应：文字换行后卡片撑高，iframe 必须同步加高，
+    // 否则底部被裁切。components.html 的 iframe 与主页面同源，可直接改写高度；
+    // 异常时静默退回后端估算的固定高度。
+    function fit() {{
+        try {{
+            var h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+            if (window.frameElement && h > 0) window.frameElement.style.height = (h + 4) + "px";
+        }} catch (e) {{}}
+    }}
+    fit();
+    requestAnimationFrame(fit);
+    setTimeout(fit, 150);
 }})();
 </script>
 """
@@ -837,7 +1029,7 @@ def _finalize_answer_task():
 # ==================== 会话状态初始化 ====================
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": GREETING_MESSAGE}
+        {"role": "assistant", "content": _greeting_now()}
     ]
 
 if "api_healthy" not in st.session_state:
@@ -855,6 +1047,10 @@ def render_message_content(content):
     else:
         st.write(content)
 
+
+# ==================== 设备判定（必须先于侧栏：文档模块按端切换 下载/选择） ====================
+
+IS_MOBILE = _is_mobile()
 
 # ==================== 侧边栏 ====================
 
@@ -910,7 +1106,7 @@ with st.sidebar:
 
     if st.button("🗑️ 清空对话", use_container_width=True):
         st.session_state.messages = [
-            {"role": "assistant", "content": GREETING_MESSAGE}
+            {"role": "assistant", "content": _greeting_now()}
         ]
         st.session_state.pop("pending_image", None)
         # 同步丢弃进行中的回答任务：后台线程会自然结束，结果不再写入历史
@@ -922,20 +1118,33 @@ with st.sidebar:
     # ---- 后端健康检查（静默执行，仅用于选择 API/直连模式） ----
     st.session_state.api_healthy = check_api_health()
 
-    # ---- 选择文档：卡片式切换右侧 PDF，当前文档亮框标注 ----
-    st.markdown("### 📄 选择文档")
-    active_doc = st.radio(
-        "选择右侧展示的文档",
-        options=list(DOC_FILES.keys()),
-        key="active_doc",
-        label_visibility="collapsed",
-        format_func=lambda name: ("📑 " if name == "选题报告" else "📝 ") + name,
-    )
+    # ---- 选择/下载文档：桌面卡片切换右侧 PDF；手机端改为下载入口 ----
+    if IS_MOBILE:
+        st.markdown("### 📄 下载文档")
+        for idx, (name, filename) in enumerate(DOC_FILES.items()):
+            icon = "📑 " if name == "选题报告" else "📝 "
+            st.download_button(
+                f"{icon}下载《{name}》(PDF)",
+                data=_load_pdf_bytes(filename),
+                file_name=filename,
+                mime="application/pdf",
+                key=f"doc_download_{idx}",
+                use_container_width=True,
+            )
+    else:
+        st.markdown("### 📄 选择文档")
+        active_doc = st.radio(
+            "选择右侧展示的文档",
+            options=list(DOC_FILES.keys()),
+            key="active_doc",
+            label_visibility="collapsed",
+            format_func=lambda name: ("📑 " if name == "选题报告" else "📝 ") + name,
+        )
     st.markdown("---")
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智能案例问答系统 v0.3.1<br>团队成员：<br>卜天伊 冯思杰 等</div>",
+        "智能案例问答系统 v0.3.2<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬</div>",
         unsafe_allow_html=True,
     )
 
@@ -944,7 +1153,13 @@ with st.sidebar:
 
 load_custom_css()
 
-left_col, right_col = st.columns([0.6, 0.4], gap="medium", vertical_alignment="top")
+if IS_MOBILE:
+    # 手机端：单列全宽对话流；不渲染右栏 PDF（文档改为侧栏下载）
+    left_col = st.container()
+    right_col = None
+    st.markdown(_MOBILE_CSS, unsafe_allow_html=True)
+else:
+    left_col, right_col = st.columns([0.6, 0.4], gap="medium", vertical_alignment="top")
 
 
 # ==================== 左栏：AI 问答 ====================
@@ -952,8 +1167,8 @@ left_col, right_col = st.columns([0.6, 0.4], gap="medium", vertical_alignment="t
 with left_col:
     st.caption("💬 案例问答 · SenseNova 6.8 FlashLite")
 
-    # 可滚动聊天容器，固定像素高度
-    chat_container = st.container(height=750)
+    # 聊天容器：桌面与手机均定高并在容器内部滚动；手机端高度再由 _MOBILE_CSS 拉伸至视口剩余空间
+    chat_container = st.container(height=430 if IS_MOBILE else 750)
 
     with chat_container:
         for msg in st.session_state.messages:
@@ -972,7 +1187,10 @@ with left_col:
         _drain_answer_task(pending_task, resume_placeholder)
         _finalize_answer_task()
 
-    if prompt := st.chat_input("请输入你的问题，例如：这个案例的研究意义是什么？"):
+    _chat_placeholder = (
+        "输入你的问题…" if IS_MOBILE else "请输入你的问题，例如：这个案例的研究意义是什么？"
+    )
+    if prompt := st.chat_input(_chat_placeholder, key=f"ci_{len(st.session_state.messages)}"):
         pending_image = st.session_state.pop("pending_image", None)
 
         if pending_image:
@@ -993,7 +1211,7 @@ with left_col:
         history = [
             {"role": m["role"], "content": m["content"]}
             for m in st.session_state.messages[:-1]
-            if m["content"] != GREETING_MESSAGE  # 问候语不作为上下文发送
+            if m["content"] not in (_GREETING_DESKTOP, _GREETING_MOBILE)  # 问候语不作为上下文发送
         ]
         fallback_notice = {"busy": False}
         summary_out = {}
@@ -1031,58 +1249,59 @@ with left_col:
         _finalize_answer_task()
 
 
-# ==================== 右栏：PDF 预览（缩放按钮 + Shift 横向滚动） ====================
+# ==================== 右栏：PDF 预览（仅桌面端；缩放按钮 + Shift 横向滚动） ====================
 
-with right_col:
-    # 根据侧栏「选择文档」的选中项切换 PDF（选中项在侧栏高亮标注）
-    active_doc = st.session_state.get("active_doc", "选题报告")
-    pdf_path = Path(__file__).resolve().parent / DOC_FILES.get(active_doc, "case_report.pdf")
+if right_col is not None:
+    with right_col:
+        # 根据侧栏「选择文档」的选中项切换 PDF（选中项在侧栏高亮标注）
+        active_doc = st.session_state.get("active_doc", "选题报告")
+        pdf_path = Path(__file__).resolve().parent / DOC_FILES.get(active_doc, "case_report.pdf")
 
-    if not pdf_path.exists():
-        st.error(f"❌ 未找到 `{pdf_path.name}`，请放入项目根目录")
-    else:
-        # 在 PDF 上方放缩放控制条（用 columns 让按钮和 PDF 在同一列）
-        zoom_col1, zoom_col2, zoom_col3 = st.columns([1, 1, 6])
-        with zoom_col1:
-            zoom_in_btn = st.button("➕", key="pdf_zoom_in", help="放大 PDF")
-        with zoom_col2:
-            zoom_out_btn = st.button("➖", key="pdf_zoom_out", help="缩小 PDF")
-        with zoom_col3:
-            st.caption("滚轮上下滚动 · Shift+滚轮横向滚动")
+        if not pdf_path.exists():
+            st.error(f"❌ 未找到 `{pdf_path.name}`，请放入项目根目录")
+        else:
+            # 在 PDF 上方放缩放控制条（用 columns 让按钮和 PDF 在同一列）
+            zoom_col1, zoom_col2, zoom_col3 = st.columns([1, 1, 6])
+            with zoom_col1:
+                zoom_in_btn = st.button("➕", key="pdf_zoom_in", help="放大 PDF")
+            with zoom_col2:
+                zoom_out_btn = st.button("➖", key="pdf_zoom_out", help="缩小 PDF")
+            with zoom_col3:
+                st.caption("滚轮上下滚动 · Shift+滚轮横向滚动")
 
-        # 初始化缩放状态
-        if "pdf_zoom" not in st.session_state:
-            st.session_state["pdf_zoom"] = 1.0
+            # 初始化缩放状态
+            if "pdf_zoom" not in st.session_state:
+                st.session_state["pdf_zoom"] = 1.0
 
-        # 处理缩放按钮
-        if zoom_in_btn:
-            st.session_state["pdf_zoom"] = min(3.0, st.session_state["pdf_zoom"] + 0.2)
-        if zoom_out_btn:
-            st.session_state["pdf_zoom"] = max(0.5, st.session_state["pdf_zoom"] - 0.2)
+            # 处理缩放按钮
+            if zoom_in_btn:
+                st.session_state["pdf_zoom"] = min(3.0, st.session_state["pdf_zoom"] + 0.2)
+            if zoom_out_btn:
+                st.session_state["pdf_zoom"] = max(0.5, st.session_state["pdf_zoom"] - 0.2)
 
-        zoom = st.session_state["pdf_zoom"]
+            zoom = st.session_state["pdf_zoom"]
 
-        # 渲染 PDF
-        st.pdf(pdf_path, height=850)
+            # 渲染 PDF
+            st.pdf(pdf_path, height=850)
 
-        # 用 CSS 动态缩放 PDF，并允许横向滚动
-        # 新版 st.pdf 为 bidi 组件：内容渲染在宿主元素 shadow DOM 的 canvas 上，
-        # 无法用选择器直接命中，因此对宿主 [data-testid="stBidiComponentIsolated"]
-        # 整体做 transform: scale()；缩放超宽时由其元素容器提供横向滚动
-        # （Chrome 原生支持 Shift+滚轮横向滚动可滚动容器）
-        pdf_control_html = f"""
-        <style>
-            /* PDF 元素容器设为可横向滚动，容纳放大后的内容 */
-            div[data-testid="stElementContainer"]:has([data-testid="stBidiComponentIsolated"]) {{
-                overflow-x: auto !important;
-                overflow-y: auto !important;
-            }}
-            /* 缩放 st.pdf 的 bidi 宿主（连带 shadow DOM 内的 canvas） */
-            section[data-testid="stMain"] [data-testid="stBidiComponentIsolated"] {{
-                transform: scale({zoom}) !important;
-                transform-origin: top left !important;
-                width: {100 / zoom}% !important;
-            }}
-        </style>
-        """
-        st.markdown(pdf_control_html, unsafe_allow_html=True)
+            # 用 CSS 动态缩放 PDF，并允许横向滚动
+            # 新版 st.pdf 为 bidi 组件：内容渲染在宿主元素 shadow DOM 的 canvas 上，
+            # 无法用选择器直接命中，因此对宿主 [data-testid="stBidiComponentIsolated"]
+            # 整体做 transform: scale()；缩放超宽时由其元素容器提供横向滚动
+            # （Chrome 原生支持 Shift+滚轮横向滚动可滚动容器）
+            pdf_control_html = f"""
+            <style>
+                /* PDF 元素容器设为可横向滚动，容纳放大后的内容 */
+                div[data-testid="stElementContainer"]:has([data-testid="stBidiComponentIsolated"]) {{
+                    overflow-x: auto !important;
+                    overflow-y: auto !important;
+                }}
+                /* 缩放 st.pdf 的 bidi 宿主（连带 shadow DOM 内的 canvas） */
+                section[data-testid="stMain"] [data-testid="stBidiComponentIsolated"] {{
+                    transform: scale({zoom}) !important;
+                    transform-origin: top left !important;
+                    width: {100 / zoom}% !important;
+                }}
+            </style>
+            """
+            st.markdown(pdf_control_html, unsafe_allow_html=True)
