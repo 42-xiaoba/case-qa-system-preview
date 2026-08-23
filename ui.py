@@ -22,7 +22,7 @@ import streamlit.components.v1 as components
 # ==================== 页面配置（必须是第一个 Streamlit 命令） ====================
 
 st.set_page_config(
-    page_title="智能案例问答系统",
+    page_title="智渡小武侯",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -122,7 +122,7 @@ CUSTOM_CSS = """
     }
     /* 收起时的竖排提示文字（用伪元素，避免被 .stMarkdown 的 opacity:0 影响） */
     section[data-testid="stSidebar"]::after {
-        content: "图片上传，切换pdf等功能在此处";
+        content: "图片上传、切换文档等功能在此处";
         position: absolute;
         top: 50%;
         left: 50%;
@@ -318,6 +318,52 @@ CUSTOM_CSS = """
     div[data-testid="stToastContainer"] {
         background: transparent !important;
     }
+
+    /* ========== 对话布局重构：头像独占一行、正文通栏居中（手机/电脑通用） ========== */
+    /* 消息容器改块级布局：头像行在上，正文自然落到下一行并通栏渲染 */
+    [data-testid="stChatMessage"] {
+        display: block !important;
+    }
+    /* 去掉用户头像（占位容器随内容塌缩，提问文字顶格通栏） */
+    [data-testid="stChatMessageAvatarUser"] {
+        display: none !important;
+    }
+    /* 用户提问气泡底色再变浅一档 */
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        background-color: rgba(255, 255, 255, 0.04) !important;
+    }
+    /* 智能体头像（图片型）稍调大 */
+    [data-testid="stChatMessage"] img[alt="assistant avatar"] {
+        width: 46px !important;
+        height: 46px !important;
+        border-radius: 50% !important;
+    }
+    /* 「等待中/已完成思考」标签固定在头像右侧同一行：
+       负上移进入头像行且自身占位归零，正文仍从头像下方一行开始 */
+    [data-testid="stChatMessageContent"] p:first-child:has(span.think-line) {
+        margin-top: -52px !important;
+        margin-left: 58px !important;
+        min-height: 52px !important;
+        box-sizing: border-box !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+    /* 侧栏标题：与左下角签名同款楷体斜体 + 蓝→紫→粉渐变（双端统一） */
+    .side-title {
+        text-align: center;
+        font-family: "KaiTi", "STKaiti", "楷体", "Noto Serif SC", serif;
+        font-style: italic;
+        font-weight: bold;
+        font-size: 1.55rem;
+        letter-spacing: 2px;
+        padding: 0.15rem 0 0.4rem;
+        background: linear-gradient(135deg, #4da3ff, #b06cff, #ff6ec7);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 0 8px rgba(120, 160, 255, 0.45));
+    }
 </style>
 """
 
@@ -336,7 +382,10 @@ _MOBILE_CSS = """
         position: fixed !important;
         left: 10px;
         right: 10px;
-        bottom: calc(env(safe-area-inset-bottom) + 6px);
+        /* 整体上移：官方右下角水印会盖住贴底时的发送键，
+           新底边 ≈ 旧顶边（旧 bottom 6px + 输入框高约 56px），
+           左下空出的条带用于品牌签名 */
+        bottom: calc(env(safe-area-inset-bottom) + 60px);
         /* 层级压过折叠侧栏 rail 与悬浮组件 */
         z-index: 999999999;
     }
@@ -348,15 +397,37 @@ _MOBILE_CSS = """
        注意：选择器必须单行书写，行首 ">" 会被 Markdown 误解析为引用块 */
     section[data-testid="stMain"] [data-testid="stLayoutWrapper"]:has(> [data-testid="stVerticalBlock"] > [data-testid="stLayoutWrapper"] > [data-testid="stChatMessage"]) {
         flex-basis: auto !important;
-        height: calc(100vh - 175px) !important;
-        height: calc(100dvh - 175px) !important;
+        height: calc(100vh - 230px) !important;
+        height: calc(100dvh - 230px) !important;
         min-height: 320px !important;
         overflow-y: auto !important;
     }
     /* 主内容底部留白，防止最后一条消息被固定输入框遮挡 */
     section[data-testid="stMain"] [data-testid="stMainBlockContainer"],
     section[data-testid="stMain"] .stMainBlockContainer {
-        padding-bottom: 110px !important;
+        padding-bottom: 165px !important;
+    }
+    /* 左下角品牌签名：输入栏上移后，底部空出的条带左下角放签名，
+       与右下角官方水印左右错开互不干扰；
+       pointer-events:none 保证不挡任何点击 */
+    html body::after {
+        content: "智渡小武侯";
+        position: fixed;
+        left: 18px;
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+        transform: translateY(var(--sig-fix, 0px));
+        z-index: 999999998;
+        font-family: "KaiTi", "STKaiti", "楷体", "Noto Serif SC", serif;
+        font-style: italic;
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 3px;
+        background: linear-gradient(90deg, #8ec5ff 0%, #c4b5fd 55%, #f0abfc 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 0 7px rgba(140, 180, 255, 0.45));
+        pointer-events: none;
     }
     /* 解锁官方对侧栏宽度的 !important 强制锁定（收起态被锁死为 60px 窄条）：
        :not([data-state]) 恒真且抬升优先级，胜过官方单属性选择器；
@@ -513,7 +584,7 @@ def _build_greeting(is_mobile: bool) -> str:
         item3 = (
             "**3. 下载 PDF 文档**\n"
             "在左侧栏「📄 下载文档」中点击对应按钮，即可把《选题报告》或《案例报告（一稿）》"
-            "的 PDF 全文下载到手机本地查看。"
+            "的 PDF 全文下载到手机本地查看。（使用电脑可在线浏览）"
         )
     else:
         item3 = (
@@ -523,7 +594,7 @@ def _build_greeting(is_mobile: bool) -> str:
             "- 点击「➕」/「➖」按钮：放大或缩小 PDF\n"
             "- 按住 Shift + 滚动鼠标滚轮：横向滚动放大后的 PDF"
         )
-    return f"""你好！我是智能案例问答助手，请随时向我提问关于案例的问题。
+    return f"""你好！我是智渡小武侯，请随时向我提问关于案例的问题。
 
 ---
 
@@ -741,22 +812,28 @@ def _start_answer_task(stream, notice=None, summary_out=None, question=None):
     return task
 
 
+def _write_stream_text(placeholder, text):
+    """写入流式回答/等待文案：首段附带 think-line 标记，
+    CSS 据此把「等待中/已完成思考」标签行定位到智能体头像右侧。"""
+    placeholder.markdown('<span class="think-line"></span>' + text, unsafe_allow_html=True)
+
+
 def _drain_answer_task(task, placeholder):
     """渲染回答进度直至完成：无内容时播放三点动画，收到内容后增量刷新。
 
     本循环被组件交互触发的重跑打断时直接随脚本退出，不做任何清理——
     任务状态在 session_state 中完好，下次运行由恢复分支续接。"""
     if task["finished"]:
-        placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+        _write_stream_text(placeholder, _THINKING_PREFIX + _hide_followup_tail(task["text"]))
         return
     dots = 0
     while True:
         if task["text"]:
-            placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+            _write_stream_text(placeholder, _THINKING_PREFIX + _hide_followup_tail(task["text"]))
         else:
             dots = (dots % 3) + 1
             base_msg = _WAITING_BASE + _WAITING_BUSY_SUFFIX if task["notice"]["busy"] else _WAITING_BASE
-            placeholder.write(base_msg + "." * dots)
+            _write_stream_text(placeholder, base_msg + "." * dots)
         try:
             kind, payload = task["queue"].get(timeout=1.0)
         except queue.Empty:
@@ -764,16 +841,16 @@ def _drain_answer_task(task, placeholder):
                 # 线程意外终止且没有产出完成标记的兜底，避免动画永远转圈
                 task["text"] = task["text"] or _EMPTY_REPLY
                 task["finished"] = True
-                placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+                _write_stream_text(placeholder, _THINKING_PREFIX + _hide_followup_tail(task["text"]))
                 return
             continue
         if kind == "chunk":
             task["text"] += payload
-            placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+            _write_stream_text(placeholder, _THINKING_PREFIX + _hide_followup_tail(task["text"]))
         elif kind == "done":
             task["text"] = payload or task["text"] or _EMPTY_REPLY
             task["finished"] = True
-            placeholder.write(_THINKING_PREFIX + _hide_followup_tail(task["text"]))
+            _write_stream_text(placeholder, _THINKING_PREFIX + _hide_followup_tail(task["text"]))
             return
         else:  # error
             task["text"] = f"[错误] {payload}"
@@ -1001,6 +1078,9 @@ def _finalize_answer_task():
             followups = parsed
             text = clean
     message = {"role": "assistant", "content": text}
+    # 「已完成思考」状态行不再撤回：rerun 后历史渲染同样经 think-line 定位到头像右侧
+    if not text.startswith("[错误]"):
+        message["thinking_done"] = True
     # 路径二（零等待）：预生成线程在回答期间已启动，此刻通常已完成；
     # 极少数未完成时最多等 45s（与旧同步兜底耗时同量级），超时放弃本轮卡片
     if followups is None and task.get("fu_thread") is not None:
@@ -1029,11 +1109,45 @@ def _finalize_answer_task():
 # ==================== 会话状态初始化 ====================
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": _greeting_now()}
+        # greeting 标记：渲染时经 think-line 定位到智能体头像右侧，且不作为上下文发送
+        {"role": "assistant", "content": _greeting_now(), "greeting": True}
     ]
 
 if "api_healthy" not in st.session_state:
     st.session_state.api_healthy = False
+
+
+_THINK_LINE_MARK = '<span class="think-line"></span>'
+
+
+def render_assistant_message(msg):
+    """渲染助手消息：问候语与「已完成思考」状态行经 think-line 标记定位到头像右侧，
+    其余正文照常从头像下方通栏渲染。"""
+    content = msg["content"]
+    marked = bool(msg.get("thinking_done") or msg.get("greeting"))
+    if not isinstance(content, list):
+        if marked:
+            # 思考状态行只在流式占位符里出现过，历史正文不含前缀；
+            # 这里必须补回，否则首个含标记的段落是回答正文，会被拉到头像右侧
+            head = "" if msg.get("greeting") else _THINKING_PREFIX
+            st.markdown(_THINK_LINE_MARK + head + str(content), unsafe_allow_html=True)
+        else:
+            st.write(content)
+        return
+    first_text = True
+    for part in content:
+        kind = part.get("type")
+        if kind == "text":
+            if marked and first_text:
+                st.markdown(
+                    _THINK_LINE_MARK + ("" if msg.get("greeting") else _THINKING_PREFIX) + part["text"],
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.write(part["text"])
+            first_text = False
+        elif kind == "image_url":
+            st.image(part["image_url"]["url"])
 
 
 def render_message_content(content):
@@ -1052,6 +1166,30 @@ def render_message_content(content):
 
 IS_MOBILE = _is_mobile()
 
+def _pin_mobile_signature():
+    """键盘弹起时把左下角签名钉在物理屏幕底部（不随输入栏上浮）：
+    先给 viewport 声明 interactive-widget=resizes-visual 阻止布局视口被压缩；
+    对忽略该声明的浏览器，用「无键盘基线高度 − 当前布局高度」得到下移量，
+    把签名推回原位（被键盘遮挡即视为固定）。借助同源 iframe 写回父页面。"""
+    js = (
+        "<script>(function(){"
+        "var d=parent.document,w=parent.window;"
+        "try{var m=d.querySelector('meta[name=\"viewport\"]');"
+        "if(m){var c=m.getAttribute('content')||'';"
+        "if(c.indexOf('interactive-widget')===-1){"
+        "m.setAttribute('content',c+',interactive-widget=resizes-visual');}}}catch(e){}"
+        "try{var base=w.innerHeight;"
+        "var apply=function(){"
+        "if(w.innerHeight>=base)base=w.innerHeight;"
+        "var s=Math.max(0,base-w.innerHeight);"
+        "d.documentElement.style.setProperty('--sig-fix',s.toFixed(1)+'px');};"
+        "w.addEventListener('resize',apply);"
+        "if(w.visualViewport)w.visualViewport.addEventListener('resize',apply);"
+        "apply();}catch(e){}})();</script>"
+    )
+    components.html(js, height=0, scrolling=False)
+
+
 # ==================== 侧边栏 ====================
 
 with st.sidebar:
@@ -1059,7 +1197,10 @@ with st.sidebar:
         '<div class="sidebar-hamburger">☰</div>',
         unsafe_allow_html=True,
     )
-    st.markdown("## 💬 智能案例问答系统")
+    st.markdown(
+        '<div class="side-title">智渡小武侯</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
 
     # ---- 图片上传（最多1张） ----
@@ -1144,12 +1285,19 @@ with st.sidebar:
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智能案例问答系统 v0.3.2<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬</div>",
+        "智渡小武侯 v0.3.3<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬 </div>",
         unsafe_allow_html=True,
     )
+    # 手机端：钉住左下角签名（键盘弹起时不随输入栏上浮）
+    if IS_MOBILE:
+        _pin_mobile_signature()
 
 
 # ==================== 主界面 ====================
+
+# 智能体头像：根目录图片，缺失时回退官方默认头像
+_BOT_AVATAR_FILE = Path(__file__).resolve().parent / "智渡小武侯头像.jpg"
+BOT_AVATAR = str(_BOT_AVATAR_FILE) if _BOT_AVATAR_FILE.exists() else None
 
 load_custom_css()
 
@@ -1172,8 +1320,14 @@ with left_col:
 
     with chat_container:
         for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                render_message_content(msg["content"])
+            with st.chat_message(
+                msg["role"],
+                avatar=BOT_AVATAR if msg["role"] == "assistant" else None,
+            ):
+                if msg["role"] == "assistant":
+                    render_assistant_message(msg)
+                else:
+                    render_message_content(msg["content"])
                 if msg.get("followups"):
                     render_followup_cards(msg["followups"])
 
@@ -1182,7 +1336,7 @@ with left_col:
     pending_task = st.session_state.get("answer_task")
     if pending_task is not None:
         with chat_container:
-            with st.chat_message("assistant"):
+            with st.chat_message("assistant", avatar=BOT_AVATAR):
                 resume_placeholder = st.empty()
         _drain_answer_task(pending_task, resume_placeholder)
         _finalize_answer_task()
@@ -1243,7 +1397,7 @@ with left_col:
         st.session_state["answer_task"] = task
 
         with chat_container:
-            with st.chat_message("assistant"):
+            with st.chat_message("assistant", avatar=BOT_AVATAR):
                 answer_placeholder = st.empty()
         _drain_answer_task(task, answer_placeholder)
         _finalize_answer_task()
