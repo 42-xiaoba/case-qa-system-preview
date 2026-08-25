@@ -73,7 +73,9 @@ CUSTOM_CSS = """
         transition: width 0.3s ease, min-width 0.3s ease, max-width 0.3s ease !important;
         overflow: hidden !important;
     }
-    section[data-testid="stSidebar"]:hover {
+    /* hover 之外叠加 focus-within：正在操作侧栏控件（如选择供应商）时
+       即使鼠标移出侧栏也保持展开，避免配置中途被收回 */
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) {
         width: 250px !important;
         min-width: 250px !important;
         max-width: 250px !important;
@@ -100,16 +102,16 @@ CUSTOM_CSS = """
         pointer-events: none;
     }
     /* 展开时恢复显示 */
-    section[data-testid="stSidebar"]:hover .stMarkdown,
-    section[data-testid="stSidebar"]:hover .stButton,
-    section[data-testid="stSidebar"]:hover .stAlert,
-    section[data-testid="stSidebar"]:hover .stFileUploader,
-    section[data-testid="stSidebar"]:hover .stImage,
-    section[data-testid="stSidebar"]:hover [data-testid="stFileUploaderDropzone"],
-    section[data-testid="stSidebar"]:hover [data-testid="stFileUploaderDropzoneInstructions"],
-    section[data-testid="stSidebar"]:hover [data-testid="stBaseButton-secondary"],
-    section[data-testid="stSidebar"]:hover [data-testid="stRadio"],
-    section[data-testid="stSidebar"]:hover .stCaption {
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stMarkdown,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stButton,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stAlert,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stFileUploader,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stImage,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stFileUploaderDropzone"],
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stFileUploaderDropzoneInstructions"],
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stBaseButton-secondary"],
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stRadio"],
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stCaption {
         opacity: 1;
         pointer-events: auto;
     }
@@ -138,7 +140,7 @@ CUSTOM_CSS = """
         pointer-events: none;
         z-index: 10;
     }
-    section[data-testid="stSidebar"]:hover::after {
+    section[data-testid="stSidebar"]:is(:hover, :focus-within)::after {
         opacity: 0;
     }
 
@@ -611,6 +613,9 @@ def _build_greeting(is_mobile: bool) -> str:
 **4. 对话管理**
 - 左侧栏「🗑️ 清空对话」：清空当前所有对话记录，重新开始
 
+**5. 自定义模型服务（可选）**
+展开左侧栏「⚙️ 自定义模型服务」，选择供应商（商汤 / 智谱 / OpenAI 兼容接口 / OpenRouter），填入你自己的 API Key 即可优先使用你的专属模型回答问题；不配置则自动使用内置免费模型。Key 仅保存在当前浏览器会话中，刷新页面即失效，不会上传或持久存储。
+
 ---
 
 💡 **使用提示**：问题越具体，回答越精准。涉及案例中的数据、人物、政策时，建议直接引用相关关键词提问。"""
@@ -632,6 +637,7 @@ def send_chat_request_stream_direct(
     notice: dict | None = None,
     existing_summary: str | None = None,
     summary_out: dict | None = None,
+    custom: dict | None = None,
 ):
     """直连模式流式生成器（记忆压缩 → 路由 → 检索 → 预算制组装）
 
@@ -653,7 +659,7 @@ def send_chat_request_stream_direct(
     )
     messages = append_followup_instruction(messages)
     try:
-        for chunk in llm_client.chat_stream(messages):
+        for chunk in llm_client.chat_stream(messages, custom=custom):
             if isinstance(chunk, ModelFallbackSignal):
                 if notice is not None:
                     notice["busy"] = True
@@ -663,13 +669,21 @@ def send_chat_request_stream_direct(
         yield f"\n\n[错误] 模型调用失败: {e}"
 
 
-def send_chat_request_stream_api(query: str, history: list | None = None, notice: dict | None = None):
+def send_chat_request_stream_api(
+    query: str,
+    history: list | None = None,
+    notice: dict | None = None,
+    custom: dict | None = None,
+):
     """API 模式流式生成器
 
     notice: 降级通知字典。检测到后端发来的降级标记时置 notice["busy"]=True。
+    custom: 用户自定义模型服务配置（可选），随请求体透传给后端。
     """
     yield _WAITING_MSG
     payload = {"query": query, "history": history or []}
+    if custom:
+        payload["custom"] = custom
     marker = API_FALLBACK_MARKER
     keep = len(marker) - 1  # 缓存尾部字符，防止标记被字节块边界截断
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -1254,6 +1268,52 @@ with st.sidebar:
         st.session_state.pop("answer_task", None)
         st.session_state["image_uploader_counter"] += 1
         st.rerun()
+
+    # ---- 自定义模型服务（可选）：用户自带 API Key，会话级生效 ----
+    with st.expander("⚙️ 自定义模型服务"):
+        st.caption(
+            "用你自己的 API Key 回答问题（仅作用于文字问答，图片识别仍走内置视觉模型）。"
+            "配置只保存在当前浏览器会话中，不会写入服务器。"
+        )
+        _prov_label = st.selectbox(
+            "供应商",
+            ["不使用（默认内置）", "智谱 GLM", "商汤 SenseNova", "OpenRouter", "OpenAI 兼容接口"],
+        )
+        _prov_map = {
+            "智谱 GLM": "zhipu",
+            "商汤 SenseNova": "sensenova",
+            "OpenRouter": "openrouter",
+            "OpenAI 兼容接口": "openai_compat",
+        }
+        _c_key = st.text_input("API Key", type="password")
+        _c_model = st.text_input("模型名称（留空使用该供应商推荐默认）")
+        _c_base = ""
+        if _prov_label == "OpenAI 兼容接口":
+            _c_base = st.text_input("接口地址 base_url（如 https://api.example.com/v1）")
+        _need_model = _prov_label in ("OpenRouter", "OpenAI 兼容接口")
+        _need_base = _prov_label == "OpenAI 兼容接口"
+        if (
+            _prov_label == "不使用（默认内置）"
+            or not _c_key.strip()
+            or (_need_model and not _c_model.strip())
+            or (_need_base and not _c_base.strip())
+        ):
+            st.session_state.pop("custom_llm", None)
+            if _prov_label != "不使用（默认内置）" and _c_key.strip():
+                st.info(
+                    "OpenAI 兼容接口需补全 base_url 后生效"
+                    if _need_base
+                    else "OpenRouter 需填写模型名称后生效"
+                )
+        else:
+            st.session_state["custom_llm"] = {
+                "provider": _prov_map[_prov_label],
+                "api_key": _c_key.strip(),
+                "model": _c_model.strip(),
+                **({"base_url": _c_base.strip()} if _need_base else {}),
+            }
+            st.success(f"✅ 将优先使用你的 {_prov_label} 模型回答；调用失败时自动切回内置模型")
+
     st.markdown("---")
 
     # ---- 后端健康检查（静默执行，仅用于选择 API/直连模式） ----
@@ -1379,8 +1439,11 @@ with left_col:
                 stream = send_vision_chat_stream_direct(prompt, pending_image, history)
         else:
             # 无图片：走文本模型（主模型受限/超时时自动降级到备用模型）
+            _custom_llm = st.session_state.get("custom_llm")
             if st.session_state.api_healthy:
-                stream = send_chat_request_stream_api(prompt, history, notice=fallback_notice)
+                stream = send_chat_request_stream_api(
+                    prompt, history, notice=fallback_notice, custom=_custom_llm
+                )
             else:
                 stream = send_chat_request_stream_direct(
                     prompt,
@@ -1388,6 +1451,7 @@ with left_col:
                     notice=fallback_notice,
                     existing_summary=st.session_state.get("history_summary"),
                     summary_out=summary_out,
+                    custom=_custom_llm,
                 )
 
         # 流的消费全部移交后台线程并存入 session_state：

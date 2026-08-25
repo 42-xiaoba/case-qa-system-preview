@@ -54,6 +54,10 @@ class ChatRequest(BaseModel):
     """聊天请求"""
     query: str = Field(..., description="用户输入的问题")
     history: list[dict] | None = Field(default=None, description="历史对话记录")
+    custom: dict | None = Field(
+        default=None,
+        description="用户自定义模型服务（可选）：{provider, api_key, model?, base_url?}",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -110,7 +114,7 @@ async def chat(request: ChatRequest):
             history=windowed,
             history_summary=summary or None,
         )
-        reply = llm_client.chat(messages)
+        reply = llm_client.chat(messages, custom=request.custom)
         return ChatResponse(
             reply=reply,
             sources=[f"tier{d.get('tier')}·{d.get('section', '')}" for d in docs],
@@ -149,7 +153,7 @@ async def chat_stream(request: ChatRequest):
     def generate():
         """同步生成器，逐 chunk 产出文本"""
         try:
-            for chunk in llm_client.chat_stream(messages):
+            for chunk in llm_client.chat_stream(messages, custom=request.custom):
                 if isinstance(chunk, ModelFallbackSignal):
                     # 发生模型降级：向前端发送标记，前端据此切换等待提示
                     yield API_FALLBACK_MARKER

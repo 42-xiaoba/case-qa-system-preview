@@ -105,6 +105,48 @@ class _ModelEndpoint:
     extra_body: Optional[dict] = None  # 第三方接口的自定义附加字段（use_thinking 为 False 时生效）
 
 
+# 用户自定义供应商预设：base_url/model 为推荐默认值，用户可显式覆盖
+CUSTOM_PROVIDER_PRESETS: dict[str, dict] = {
+    "zhipu": {
+        "label": "智谱GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4.7-flash", "use_thinking": True,
+    },
+    "sensenova": {
+        "label": "商汤SenseNova", "base_url": "https://token.sensenova.cn/v1",
+        "model": "sensenova-6.8-flash-lite", "use_thinking": False,
+        "extra_body": {"reasoning_effort": "none"},
+    },
+    "openrouter": {
+        "label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
+        "model": "", "use_thinking": False,
+    },
+    "openai_compat": {
+        "label": "OpenAI兼容", "base_url": "", "model": "", "use_thinking": False,
+    },
+}
+
+
+def _build_custom_endpoint(custom: Optional[dict]) -> Optional[_ModelEndpoint]:
+    """按请求携带的自定义配置构造端点；信息不全或供应商未知时返回 None（走内置链）"""
+    if not isinstance(custom, dict):
+        return None
+    preset = CUSTOM_PROVIDER_PRESETS.get((custom.get("provider") or "").strip())
+    api_key = (custom.get("api_key") or "").strip()
+    if preset is None or not api_key:
+        return None
+    base_url = ((custom.get("base_url") or "").strip() or preset["base_url"]).rstrip("/")
+    model = (custom.get("model") or "").strip() or preset["model"]
+    if not base_url or not model:
+        return None
+    return _ModelEndpoint(
+        client=_make_openai_client(api_key, base_url),
+        model_name=model,
+        use_thinking=preset["use_thinking"],
+        label=f"自定义·{preset['label']}·{model}",
+        extra_body=preset.get("extra_body"),
+    )
+
+
 class LLMClient:
     """大模型 API 客户端，封装对智谱 GLM 系列的调用
 
@@ -190,6 +232,12 @@ class LLMClient:
         """当前降级链端点列表（浅拷贝暴露，便于测试与诊断）"""
         return list(self._endpoints)
 
+    def _chain(self, custom: Optional[dict] = None) -> list[_ModelEndpoint]:
+        """本次调用使用的端点链：用户自定义端点（若有效）插到链首优先使用，
+        失败时自动回退内置降级链；不修改全局共享的 self._endpoints"""
+        custom_ep = _build_custom_endpoint(custom)
+        return [custom_ep, *self._endpoints] if custom_ep is not None else self._endpoints
+
     @staticmethod
     def _thinking_extra_body() -> dict:
         """glm-4.7 系列为混合推理模型：思考 token 会挤占 max_tokens，
@@ -231,6 +279,7 @@ class LLMClient:
         top_p: Optional[float] = None,
         retries: Optional[int] = None,
         use_thinking: Optional[bool] = None,
+        custom: Optional[dict] = None,
     ) -> str:
         """
         发送聊天请求并获取回复（主模型失败时自动降级到备用模型）
@@ -244,13 +293,16 @@ class LLMClient:
                      （有降级链时仅 2 次快速尝试）；备用模型固定使用 _FALLBACK_RETRIES
             use_thinking: 思考模式开关覆盖（None=沿用端点配置；False=强制关闭，
                           用于延伸问题等低延迟辅助调用）
+            custom: 用户自定义模型服务配置（可选）：{"provider", "api_key",
+                    "model"?, "base_url"?}；有效时插到降级链最前优先使用
 
         Returns:
             模型生成的回复文本
         """
         last_error = None
-        has_chain = len(self._endpoints) > 1
-        for i, ep in enumerate(self._endpoints):
+        endpoints = self._chain(custom)
+        has_chain = len(endpoints) > 1
+        for i, ep in enumerate(endpoints):
             attempts, base_delay = _attempt_plan(i, has_chain, retries)
             try:
                 response = _create_with_retry(
@@ -270,6 +322,7 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
         retries: Optional[int] = None,
+        custom: Optional[dict] = None,
     ):
         """
         流式聊天接口（主模型失败时自动降级到备用模型）
@@ -287,14 +340,17 @@ class LLMClient:
             max_tokens: 最大生成 token 数
             top_p: 核采样参数
             retries: 主模型 429 限流重试次数（None 则按是否存在降级链自动决定）
+            custom: 用户自定义模型服务配置（可选）：{"provider", "api_key",
+                    "model"?, "base_url"?}；有效时插到降级链最前优先使用
 
         Yields:
             若发生降级：先产出一个 MODEL_FALLBACK_SIGNAL，再产出文本片段；
             否则仅产出文本片段。
         """
         last_error = None
-        has_chain = len(self._endpoints) > 1
-        for i, ep in enumerate(self._endpoints):
+        endpoints = self._chain(custom)
+        has_chain = len(endpoints) > 1
+        for i, ep in enumerate(endpoints):
             attempts, base_delay = _attempt_plan(i, has_chain, retries)
             delay = base_delay if base_delay is not None else _RETRY_BASE_DELAY
 
