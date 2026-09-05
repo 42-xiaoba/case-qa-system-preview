@@ -580,18 +580,18 @@ _WAITING_MSG = _WAITING_BASE + "...\n\n"
 # 主模型首次请求失败（限流/超时触发模型降级）后切换为此提示，末尾三点循环动画不变
 _WAITING_MSG_BUSY = _WAITING_BASE + _WAITING_BUSY_SUFFIX + "...\n\n"
 
-# 初始问候语 + 功能介绍（手机端第 3 条为下载说明，桌面端为 PDF 预览说明）
+# 初始问候语 + 功能介绍（手机端第 4 条为下载说明，桌面端为 PDF 预览说明）
 def _build_greeting(is_mobile: bool) -> str:
     if is_mobile:
         item3 = (
-            "**3. 下载 PDF 文档**\n"
-            "在左侧栏「📄 下载文档」中点击对应按钮，即可把《选题报告》或《案例报告（一稿）》"
+            "**4. 下载 PDF 文档**\n"
+            "在左侧栏「下载文档」中点击对应按钮，即可把《选题报告》或《案例报告（一稿）》"
             "的 PDF 全文下载到手机本地查看。（使用电脑可在线浏览）"
         )
     else:
         item3 = (
-            "**3. PDF 文档预览**\n"
-            "右侧栏展示文档 PDF，可在左侧栏「📄 选择文档」中切换「选题报告」/「案例报告（一稿）」，当前展示的文档会高亮标注。支持以下操作：\n"
+            "**4. PDF 文档预览**\n"
+            "右侧栏展示文档 PDF，可在左侧栏「选择文档」中切换「选题报告」/「案例报告（一稿）」，当前展示的文档会高亮标注。支持以下操作：\n"
             "- 滚动鼠标滚轮：上下翻阅 PDF 内容\n"
             "- 点击「➕」/「➖」按钮：放大或缩小 PDF\n"
             "- 按住 Shift + 滚动鼠标滚轮：横向滚动放大后的 PDF"
@@ -605,20 +605,23 @@ def _build_greeting(is_mobile: bool) -> str:
 **1. 智能案例问答（文本）**
 在下方输入框输入你的问题，例如"这个案例的研究意义是什么？""交易成本理论如何应用？"，我会基于案例文本给出专业、有深度的回答。
 
-**2. 图片识别问答（视觉）**
-点击左侧栏「🖼️ 添加图片」上传图片（支持 PNG/JPG/WebP/GIF，每次最多1张），然后输入问题即可让我识别图片内容并回答。适合上传案例中的图表、流程图、截图等视觉内容提问。
+**2. 多视角回答**
+在左侧栏「回答视角」中切换：老百姓视角（默认）、基层工作人员视角、数据官视角、部门负责人视角。同一个问题，我会站在不同角色的立场与关切来回答——无论哪种视角，事实与出处标注始终一致。
+
+**3. 图片识别问答（视觉）**
+点击左侧栏「添加图片」上传图片（支持 PNG/JPG/WebP/GIF，每次最多1张），然后输入问题即可让我识别图片内容并回答。适合上传案例中的图表、流程图、截图等视觉内容提问。
 
 {item3}
 
-**4. 对话管理**
-- 左侧栏「🗑️ 清空对话」：清空当前所有对话记录，重新开始
+**5. 对话管理**
+- 左侧栏「清空对话」：清空当前所有对话记录，重新开始
 
-**5. 自定义模型服务（可选）**
-展开左侧栏「⚙️ 自定义模型服务」，选择供应商（商汤 / 智谱 / OpenAI 兼容接口 / OpenRouter），填入你自己的 API Key 即可优先使用你的专属模型回答问题；不配置则自动使用内置免费模型。Key 仅保存在当前浏览器会话中，刷新页面即失效，不会上传或持久存储。
+**6. 自定义模型服务（可选）**
+展开左侧栏「自定义模型服务」，选择供应商（商汤 / 智谱 / OpenAI 兼容接口 / OpenRouter），填入你自己的 API Key 即可优先使用你的专属模型回答问题；不配置则自动使用内置免费模型。Key 仅保存在当前浏览器会话中，刷新页面即失效，不会上传或持久存储。
 
 ---
 
-💡 **使用提示**：问题越具体，回答越精准。涉及案例中的数据、人物、政策时，建议直接引用相关关键词提问。"""
+💡 **使用提示**：问题越具体，回答越精准。涉及案例中的数据、人物、政策时，建议直接引用相关关键词提问；也可以切换不同视角，从多个角色立场理解同一问题。"""
 
 
 _GREETING_DESKTOP = _build_greeting(False)
@@ -638,6 +641,7 @@ def send_chat_request_stream_direct(
     existing_summary: str | None = None,
     summary_out: dict | None = None,
     custom: dict | None = None,
+    perspective: str | None = None,
 ):
     """直连模式流式生成器（记忆压缩 → 路由 → 检索 → 预算制组装）
 
@@ -647,6 +651,7 @@ def send_chat_request_stream_direct(
             后台线程中执行，不能直接读写 st.session_state，因此由调用方
             传入当前摘要，并用 summary_out["value"] 带回压缩后的新摘要，
             由主线程在回答完成时统一写回会话状态。
+    perspective: 回答视角 key（None = 默认视角）。
     """
     yield _WAITING_MSG
     windowed, new_summary = memory_prepare(history or [], existing_summary)
@@ -656,6 +661,7 @@ def send_chat_request_stream_direct(
         query,
         history=windowed,
         history_summary=new_summary or None,
+        perspective=perspective,
     )
     messages = append_followup_instruction(messages)
     try:
@@ -674,16 +680,20 @@ def send_chat_request_stream_api(
     history: list | None = None,
     notice: dict | None = None,
     custom: dict | None = None,
+    perspective: str | None = None,
 ):
     """API 模式流式生成器
 
     notice: 降级通知字典。检测到后端发来的降级标记时置 notice["busy"]=True。
     custom: 用户自定义模型服务配置（可选），随请求体透传给后端。
+    perspective: 回答视角 key（None = 默认视角），随请求体透传给后端。
     """
     yield _WAITING_MSG
     payload = {"query": query, "history": history or []}
     if custom:
         payload["custom"] = custom
+    if perspective:
+        payload["perspective"] = perspective
     marker = API_FALLBACK_MARKER
     keep = len(marker) - 1  # 缓存尾部字符，防止标记被字节块边界截断
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -726,11 +736,14 @@ def send_chat_request_stream_api(
         yield f"\n\n[错误] {str(e)}"
 
 
-def send_vision_chat_stream_direct(query: str, image_data_url: str, history: list | None = None):
+def send_vision_chat_stream_direct(
+    query: str, image_data_url: str, history: list | None = None, perspective: str | None = None
+):
     """直连模式视觉流式生成器"""
     yield _WAITING_MSG
     messages = prompt_manager.build_vision_messages(
-        user_query=query, image_data_url=image_data_url, history=history or []
+        user_query=query, image_data_url=image_data_url, history=history or [],
+        perspective=perspective,
     )
     messages = append_followup_instruction(messages)
     try:
@@ -740,10 +753,14 @@ def send_vision_chat_stream_direct(query: str, image_data_url: str, history: lis
         yield f"\n\n[错误] 视觉模型调用失败: {e}"
 
 
-def send_vision_chat_stream_api(query: str, image_data_url: str, history: list | None = None):
+def send_vision_chat_stream_api(
+    query: str, image_data_url: str, history: list | None = None, perspective: str | None = None
+):
     """API 模式视觉流式生成器"""
     yield _WAITING_MSG
     payload = {"query": query, "image": image_data_url, "history": history or []}
+    if perspective:
+        payload["perspective"] = perspective
     try:
         with httpx.Client() as client:
             with client.stream(
@@ -1218,7 +1235,7 @@ with st.sidebar:
     st.markdown("---")
 
     # ---- 图片上传（最多1张） ----
-    st.markdown("### 🖼️ 添加图片")
+    st.markdown("### :material/image: 添加图片")
     _vision_client = get_vision_llm_client()
     if _vision_client is not None:
         # 用计数器作为 uploader key 的一部分，点击"移除"时递增计数器即可强制重置 widget
@@ -1237,7 +1254,7 @@ with st.sidebar:
             mime_type = uploaded_image.type or "image/png"
             st.session_state["pending_image"] = f"data:{mime_type};base64,{img_b64}"
             st.image(uploaded_image, caption="已选择", use_container_width=True)
-            if st.button("🗑️ 移除图片", use_container_width=True):
+            if st.button("移除图片", icon=":material/delete:", use_container_width=True):
                 # 清除待发送图片 + 递增计数器让 uploader 在下一次 rerun 时生成新 key，从而被重置为空
                 st.session_state.pop("pending_image", None)
                 st.session_state["image_uploader_counter"] += 1
@@ -1245,7 +1262,7 @@ with st.sidebar:
         else:
             st.session_state.pop("pending_image", None)
     else:
-        st.warning("⚠️ 视觉功能未启用")
+        st.warning("视觉功能未启用")
         # 诊断信息：帮助定位密钥读取失败的原因
         _v_key_env = bool(_os.environ.get("GLM_V_API_KEY"))
         _v_key_secret = False
@@ -1259,7 +1276,26 @@ with st.sidebar:
             st.caption(f"注入异常: {'; '.join(_secrets_errors)}")
         st.caption("请在 Secrets 中配置 GLM_V_API_KEY")
 
-    if st.button("🗑️ 清空对话", use_container_width=True):
+    # ---- 回答视角切换（多视角回答） ----
+    st.markdown("### :material/visibility: 回答视角")
+    _persp_options = prompt_manager.perspective_options()
+    if "perspective" not in st.session_state:
+        st.session_state["perspective"] = prompt_manager.default_perspective()
+    _persp_keys = [key for key, _label in _persp_options]
+    _persp_labels = {key: label for key, label in _persp_options}
+    # 配置缺失兜底：当前会话保存的 key 不在可选项中时回退默认视角
+    if st.session_state["perspective"] not in _persp_keys:
+        st.session_state["perspective"] = prompt_manager.default_perspective()
+    st.radio(
+        "AI 以哪个角色的立场回答问题",
+        options=_persp_keys,
+        format_func=lambda key: _persp_labels[key],
+        key="perspective",
+        label_visibility="collapsed",
+    )
+    st.caption("切换后从下一次提问开始按新视角作答")
+
+    if st.button("清空对话", icon=":material/delete:", use_container_width=True):
         st.session_state.messages = [
             {"role": "assistant", "content": _greeting_now()}
         ]
@@ -1270,7 +1306,7 @@ with st.sidebar:
         st.rerun()
 
     # ---- 自定义模型服务（可选）：用户自带 API Key，会话级生效 ----
-    with st.expander("⚙️ 自定义模型服务"):
+    with st.expander("自定义模型服务", icon=":material/tune:"):
         st.caption(
             "用你自己的 API Key 回答问题（仅作用于文字问答，图片识别仍走内置视觉模型）。"
             "配置只保存在当前浏览器会话中，不会写入服务器。"
@@ -1321,31 +1357,31 @@ with st.sidebar:
 
     # ---- 选择/下载文档：桌面卡片切换右侧 PDF；手机端改为下载入口 ----
     if IS_MOBILE:
-        st.markdown("### 📄 下载文档")
+        st.markdown("### :material/download: 下载文档")
         for idx, (name, filename) in enumerate(DOC_FILES.items()):
-            icon = "📑 " if name == "选题报告" else "📝 "
             st.download_button(
-                f"{icon}下载《{name}》(PDF)",
+                f"下载《{name}》(PDF)",
                 data=_load_pdf_bytes(filename),
                 file_name=filename,
                 mime="application/pdf",
                 key=f"doc_download_{idx}",
+                icon=":material/download:",
                 use_container_width=True,
             )
     else:
-        st.markdown("### 📄 选择文档")
+        st.markdown("### :material/description: 选择文档")
         active_doc = st.radio(
             "选择右侧展示的文档",
             options=list(DOC_FILES.keys()),
             key="active_doc",
             label_visibility="collapsed",
-            format_func=lambda name: ("📑 " if name == "选题报告" else "📝 ") + name,
+            format_func=lambda name: name,
         )
     st.markdown("---")
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智渡小武侯 v0.3.3<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬 </div>",
+        "智渡小武侯 v0.4.0<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬 </div>",
         unsafe_allow_html=True,
     )
     # 手机端：钉住左下角签名（键盘弹起时不随输入栏上浮）
@@ -1373,7 +1409,9 @@ else:
 # ==================== 左栏：AI 问答 ====================
 
 with left_col:
-    st.caption("💬 案例问答 · SenseNova 6.8 FlashLite")
+    st.caption(
+        f"💬 案例问答 · 当前视角：{prompt_manager.perspective_label(st.session_state.get('perspective'))}"
+    )
 
     # 聊天容器：桌面与手机均定高并在容器内部滚动；手机端高度再由 _MOBILE_CSS 拉伸至视口剩余空间
     chat_container = st.container(height=430 if IS_MOBILE else 750)
@@ -1434,15 +1472,21 @@ with left_col:
         if pending_image and get_vision_llm_client() is not None:
             # 有图片：走视觉模型
             if st.session_state.api_healthy:
-                stream = send_vision_chat_stream_api(prompt, pending_image, history)
+                stream = send_vision_chat_stream_api(
+                    prompt, pending_image, history, perspective=st.session_state.get("perspective")
+                )
             else:
-                stream = send_vision_chat_stream_direct(prompt, pending_image, history)
+                stream = send_vision_chat_stream_direct(
+                    prompt, pending_image, history, perspective=st.session_state.get("perspective")
+                )
         else:
             # 无图片：走文本模型（主模型受限/超时时自动降级到备用模型）
             _custom_llm = st.session_state.get("custom_llm")
+            _perspective = st.session_state.get("perspective")
             if st.session_state.api_healthy:
                 stream = send_chat_request_stream_api(
-                    prompt, history, notice=fallback_notice, custom=_custom_llm
+                    prompt, history, notice=fallback_notice, custom=_custom_llm,
+                    perspective=_perspective,
                 )
             else:
                 stream = send_chat_request_stream_direct(
@@ -1452,6 +1496,7 @@ with left_col:
                     existing_summary=st.session_state.get("history_summary"),
                     summary_out=summary_out,
                     custom=_custom_llm,
+                    perspective=_perspective,
                 )
 
         # 流的消费全部移交后台线程并存入 session_state：

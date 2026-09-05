@@ -118,6 +118,13 @@ class Settings:
         """获取输出格式要求提示词"""
         return self._config["prompt"]["output_format"]
 
+    # ---- 多视角回答 ----
+
+    @property
+    def perspectives_config(self) -> dict:
+        """获取多视角回答配置（default 默认视角 + options 各视角的 label/instruction）"""
+        return self._config.get("perspectives", {}) or {}
+
     # ---- 模型配置 ----
 
     @property

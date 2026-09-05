@@ -25,6 +25,7 @@ def build_answer_messages(
     history: list | None = None,
     history_summary: str | None = None,
     route_type: str | None = None,
+    perspective: str | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """
     构建一次问答所需的完整消息
@@ -34,6 +35,7 @@ def build_answer_messages(
         history: 历史对话 [{"role","content"},...]
         history_summary: 较早对话的滚动摘要（P1 记忆压缩产出）
         route_type: 查询类型（case/report/literature/followup），None 表示全库检索
+        perspective: 回答视角 key（citizen/grassroots/data_officer/director），None = 默认视角
 
     Returns:
         (messages, docs)：可直接发给 LLM 的消息列表 + 本次实际注入的检索块
@@ -46,6 +48,7 @@ def build_answer_messages(
         docs,
         history=history,
         history_summary=history_summary,
+        perspective=perspective,
     )
     return messages, docs
 
@@ -54,9 +57,13 @@ def build_answer_messages_routed(
     user_query: str,
     history: list | None = None,
     history_summary: str | None = None,
+    perspective: str | None = None,
 ) -> tuple[list[dict], list[dict], dict]:
     """
     P1 带路由的完整管线：分类（+追问改写）→ 检索 → 预算制组装
+
+    Args:
+        perspective: 回答视角 key（None = 默认视角）
 
     Returns:
         (messages, docs, route_info)
@@ -68,6 +75,7 @@ def build_answer_messages_routed(
         history=history,
         history_summary=history_summary,
         route_type=route["type"],
+        perspective=perspective,
     )
     return messages, docs, route
 

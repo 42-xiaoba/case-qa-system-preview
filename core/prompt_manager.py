@@ -17,7 +17,34 @@ class PromptManager:
     def __init__(self):
         self.settings = settings
 
-    def build_system_prompt(self) -> str:
+    # ---- 多视角回答 ----
+
+    def build_perspective_instruction(self, perspective: str | None) -> str:
+        """按视角 key 返回【回答视角设定】指令文本；无效或未传返回空串（不作注入）"""
+        options = self.settings.perspectives_config.get("options", {}) or {}
+        instruction = ((options.get(perspective) or {}).get("instruction") or "").strip()
+        return instruction
+
+    def perspective_options(self) -> list[tuple[str, str]]:
+        """可选视角列表 [(key, 展示label)]，按 config.yaml 中的书写顺序"""
+        options = self.settings.perspectives_config.get("options", {}) or {}
+        return [(key, (opt or {}).get("label") or key) for key, opt in options.items()]
+
+    def default_perspective(self) -> str:
+        """默认视角 key：取 config 的 default，缺省时退回第一个选项"""
+        cfg = self.settings.perspectives_config
+        options = cfg.get("options", {}) or {}
+        default = cfg.get("default")
+        if default in options:
+            return default
+        return next(iter(options), "")
+
+    def perspective_label(self, perspective: str | None) -> str:
+        """视角 key → 展示 label（侧栏标题等 UI 处使用）"""
+        options = self.settings.perspectives_config.get("options", {}) or {}
+        return ((options.get(perspective) or {}).get("label")) or perspective or ""
+
+    def build_system_prompt(self, perspective: str | None = None) -> str:
         """
         组装完整的系统提示词（System Prompt）
         将三层提示词 + 案例文本拼接为完整指令
@@ -25,6 +52,7 @@ class PromptManager:
         组装结构：
         [第一层：系统人设与角色]
         [第二层：核心业务规则]
+        [回答视角设定（选择非默认视角时注入）]
         [案例文本全文]
         [第三层：输出格式要求]
         """
@@ -38,6 +66,18 @@ class PromptManager:
             "【核心业务规则与案例知识】",
             "=" * 60,
             self.settings.prompt_core_rules,
+        ]
+        perspective_block = self.build_perspective_instruction(perspective)
+        if perspective_block:
+            sections += [
+                "",
+                "=" * 60,
+                "【回答视角设定】",
+                "=" * 60,
+                "在完全遵守上述资料铁律与引用规范的前提下，按以下视角要求组织表达：",
+                perspective_block,
+            ]
+        sections += [
             "",
             "=" * 60,
             "【以下为本次分析的完整案例文本，请仔细阅读】",
@@ -78,6 +118,7 @@ class PromptManager:
         user_query: str,
         image_data_url: str,
         history: list | None = None,
+        perspective: str | None = None,
     ) -> list[dict]:
         """
         构建含图像的多模态消息列表，供视觉模型 API 调用
@@ -86,11 +127,12 @@ class PromptManager:
             user_query: 用户当前输入的文本问题
             image_data_url: 图片的 base64 data URL（如 "data:image/png;base64,..."）
             history: 历史对话记录
+            perspective: 回答视角 key（None = 默认视角）
 
         Returns:
             完整的多模态消息列表
         """
-        system_prompt = self.build_system_prompt()
+        system_prompt = self.build_system_prompt(perspective=perspective)
         messages = [{"role": "system", "content": system_prompt}]
 
         # 添加历史对话（如果有）
@@ -124,11 +166,13 @@ class PromptManager:
         self,
         retrieved_docs: list[dict],
         history_summary: str | None = None,
+        perspective: str | None = None,
     ) -> str:
         """
         组装 RAG 路径的系统提示词
 
-        结构：人设 → 核心规则 → Tier0 常备知识卡 → 检索块（编号带来源）→ 历史摘要 → 输出格式
+        结构：人设 → 核心规则 → 视角设定（选择非默认视角时注入）→ Tier0 常备知识卡
+        → 检索块（编号带来源）→ 历史摘要 → 输出格式
         """
         parts = [
             "=" * 60,
@@ -141,6 +185,16 @@ class PromptManager:
             "=" * 60,
             self.settings.prompt_core_rules,
         ]
+        perspective_block = self.build_perspective_instruction(perspective)
+        if perspective_block:
+            parts += [
+                "",
+                "=" * 60,
+                "【回答视角设定】",
+                "=" * 60,
+                "在完全遵守上述资料铁律与引用规范的前提下，按以下视角要求组织表达：",
+                perspective_block,
+            ]
         tier0 = self._tier0_card()
         if tier0:
             parts += [
@@ -183,6 +237,7 @@ class PromptManager:
         retrieved_docs: list[dict],
         history: list | None = None,
         history_summary: str | None = None,
+        perspective: str | None = None,
     ) -> list[dict]:
         """
         带检索结果的完整消息构建（预算制组装）
@@ -197,6 +252,7 @@ class PromptManager:
             retrieved_docs: 检索到的知识块（按相关性降序）
             history: 历史对话 [{"role","content"},...]
             history_summary: 较早对话的滚动摘要（P1 记忆压缩产出）
+            perspective: 回答视角 key（None = 默认视角）
 
         Returns:
             完整消息列表
@@ -231,7 +287,7 @@ class PromptManager:
                 kept_history.insert(0, msg)
                 h_used += n
 
-        system_prompt = self.build_rag_system_prompt(kept_docs, history_summary)
+        system_prompt = self.build_rag_system_prompt(kept_docs, history_summary, perspective)
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(kept_history)
         messages.append({"role": "user", "content": user_query})

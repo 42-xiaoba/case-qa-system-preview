@@ -54,6 +54,10 @@ class ChatRequest(BaseModel):
     """聊天请求"""
     query: str = Field(..., description="用户输入的问题")
     history: list[dict] | None = Field(default=None, description="历史对话记录")
+    perspective: str | None = Field(
+        default=None,
+        description="回答视角（citizen/grassroots/data_officer/director），None = 默认老百姓视角",
+    )
     custom: dict | None = Field(
         default=None,
         description="用户自定义模型服务（可选）：{provider, api_key, model?, base_url?}",
@@ -73,6 +77,10 @@ class VisionChatRequest(BaseModel):
     query: str = Field(..., description="用户输入的问题")
     image: str = Field(..., description="图片的 base64 data URL，如 data:image/png;base64,...")
     history: list[dict] | None = Field(default=None, description="历史对话记录")
+    perspective: str | None = Field(
+        default=None,
+        description="回答视角（citizen/grassroots/data_officer/director），None = 默认老百姓视角",
+    )
 
 
 # ==================== API 接口 ====================
@@ -113,6 +121,7 @@ async def chat(request: ChatRequest):
             request.query,
             history=windowed,
             history_summary=summary or None,
+            perspective=request.perspective,
         )
         reply = llm_client.chat(messages, custom=request.custom)
         return ChatResponse(
@@ -140,6 +149,7 @@ async def chat_stream(request: ChatRequest):
             request.query,
             history=windowed,
             history_summary=summary or None,
+            perspective=request.perspective,
         )
         messages = append_followup_instruction(messages)
     except Exception as e:
@@ -186,6 +196,7 @@ async def chat_vision_stream(request: VisionChatRequest):
             user_query=request.query,
             image_data_url=request.image,
             history=request.history,
+            perspective=request.perspective,
         )
         messages = append_followup_instruction(messages)
     except Exception as e:
