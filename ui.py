@@ -229,6 +229,20 @@ CUSTOM_CSS = """
         overflow: hidden !important;
     }
 
+    /* ========== 列宽约束（关键修复：部分用户初始 PDF 右侧显示不全） ==========
+       本 Streamlit 版本列元素的 testid 是 stColumn（不是 column）。
+       列是 flex 子项且默认 min-width:auto，PDF 画布一旦按超宽渲染就会把
+       右列持续撑宽、整个区域溢出屏幕右侧；min-width:0 + overflow:hidden
+       把列钉在 flex 基准宽度上，组件 ResizeObserver 按真实列宽重排页面 */
+    div[data-testid="stColumn"] {
+        min-width: 0 !important;
+        overflow: hidden !important;
+    }
+    div[data-testid="stColumn"] [data-testid="stElementContainer"] {
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+
     /* ========== 桌面端聊天容器视口自适应 ==========
        st.container(height=750) 在本 Streamlit 版本编译为 emotion 类的固定
        750px（height/flex 均为 750，非内联样式），有效视口较矮时（Windows 显示
@@ -236,7 +250,7 @@ CUSTOM_CSS = """
        此处用 :has 结构选择器（直接子级含 stVerticalBlock > stChatMessage 的
        布局包裹层）+ emotion 类双保险，把高度钳制为 clamp(380px, 100vh-150px, 750px)：
        高视口维持 750 不变，矮视口按比例收缩，输入框始终可见。 */
-    div[data-testid="column"]:nth-child(1) div:has(
+    div[data-testid="stColumn"]:nth-child(1) div:has(
         > [data-testid="stVerticalBlock"] > [data-testid="stChatMessage"]
     ),
     section[data-testid="stMain"] .st-emotion-cache-1lsqjim {
@@ -263,12 +277,12 @@ CUSTOM_CSS = """
             overflow: visible !important;
         }
         div[data-testid="stHorizontalBlock"],
-        div[data-testid="column"] {
+        div[data-testid="stColumn"] {
             height: auto !important;
             overflow: visible !important;
         }
-        div[data-testid="column"]:nth-child(2) iframe,
-        div[data-testid="column"]:nth-child(2) div[style*="overflow"] {
+        div[data-testid="stColumn"]:nth-child(2) iframe,
+        div[data-testid="stColumn"]:nth-child(2) div[style*="overflow"] {
             height: 70vh !important;
             max-height: 70vh !important;
         }
@@ -277,19 +291,19 @@ CUSTOM_CSS = """
     /* ========== 覆盖 st.container(height=700) 为视口高度 ========== */
     /* st.container(height=700) 生成 <div style="...overflow:auto; height:700px;"> */
     /* CSS !important 可覆盖内联样式 */
-    div[data-testid="column"]:nth-child(1) div[style*="overflow"] {
+    div[data-testid="stColumn"]:nth-child(1) div[style*="overflow"] {
         height: calc(100vh - 130px) !important;
         max-height: calc(100vh - 130px) !important;
         overflow-y: auto !important;
     }
     /* 左栏滚动条暗色 */
-    div[data-testid="column"]:nth-child(1) div[style*="overflow"]::-webkit-scrollbar {
+    div[data-testid="stColumn"]:nth-child(1) div[style*="overflow"]::-webkit-scrollbar {
         width: 6px;
     }
-    div[data-testid="column"]:nth-child(1) div[style*="overflow"]::-webkit-scrollbar-track {
+    div[data-testid="stColumn"]:nth-child(1) div[style*="overflow"]::-webkit-scrollbar-track {
         background: #161b22;
     }
-    div[data-testid="column"]:nth-child(1) div[style*="overflow"]::-webkit-scrollbar-thumb {
+    div[data-testid="stColumn"]:nth-child(1) div[style*="overflow"]::-webkit-scrollbar-thumb {
         background: #555;
         border-radius: 3px;
     }
@@ -299,8 +313,8 @@ CUSTOM_CSS = """
        且组件经 CCv2 在 shadow DOM 中内联渲染、外部 CSS 无法触达内部结构；
        顶部下移由 ui.py 中 st.pdf 前的占位 div 完成（渲染位置不顶满屏幕，
        避免控件被部署环境顶部头部栏遮挡），此处仅保留 iframe 型渲染的高度兜底 */
-    div[data-testid="column"] iframe[title*="streamlit-pdf" i],
-    div[data-testid="column"] iframe[src*="pdf" i] {
+    div[data-testid="stColumn"] iframe[title*="streamlit-pdf" i],
+    div[data-testid="stColumn"] iframe[src*="pdf" i] {
         height: calc(100vh - 140px) !important;
         max-height: calc(100vh - 140px) !important;
         width: 100% !important;
@@ -918,36 +932,87 @@ def _drain_answer_task(task, placeholder):
 _FOLLOWUP_CACHE_MAX = 40
 _FOLLOWUP_CACHE: dict = {}
 
-
-def _hide_followup_tail(text: str) -> str:
-    """流式显示时隐藏延伸问题块：截断完整标记及其后内容，
-    并处理被 chunk 切断的标记前缀，避免半截标签闪现"""
-    idx = text.find(FOLLOWUP_TAG)
-    if idx != -1:
-        return text[:idx]
-    for i in range(min(len(FOLLOWUP_TAG) - 1, len(text)), 0, -1):
-        if text.endswith(FOLLOWUP_TAG[:i]):
-            return text[:-i]
-    return text
+# 兜底：模型偶发漏掉 <followups> 包裹标签、直接在回答末尾裸输出延伸问题 JSON
+_RAW_FU_JSON_RE = re.compile(r'\{\s*"related"\s*:')
+_RAW_FU_HEAD = '{"related"'
+# 裸 JSON 识别窗口：延伸 JSON 本体不超过 ~150 字符，窗口只看末尾，
+# 避免误伤正文中合法出现 {"related": 字样的回答
+_RAW_FU_WINDOW = 600
 
 
-def _parse_followup_tail(text: str):
-    """从全文尾部提取延伸问题块 → (剥离后的正文, followups|None)；
-    无标记或解析失败返回原文与 None（调用方走独立生成兜底）"""
-    idx = text.find(FOLLOWUP_TAG)
-    if idx == -1:
-        return text, None
-    body = text[:idx].rstrip()
-    tail = text[idx + len(FOLLOWUP_TAG):].split("</followups>")[0]
+def _find_raw_fu_start(text: str) -> int:
+    """在文本末尾窗口内查找裸延伸 JSON 块起点；仅当该 JSON 是文本的
+    末尾内容（已完整闭合的平面 JSON，或流式传输中尚未闭合）时才成立，
+    避免误伤正文中合法出现 {"related": 字样的回答；无则返回 -1"""
+    window = text[-_RAW_FU_WINDOW:]
+    m = _RAW_FU_JSON_RE.search(window)
+    if not m:
+        return -1
+    start = len(text) - len(window) + m.start()
+    tail = text[start:]
+    if "}" not in tail:
+        # 流式传输中：JSON 尚未闭合，其后没有任何其他内容
+        return start
+    if re.fullmatch(r"\{[^{}]*\}", tail.strip(), re.S):
+        # 已闭合：整体是末尾的平面 JSON 块，其后无正文
+        return start
+    return -1
+
+
+def _extract_followup_json(tail: str):
+    """从文本片段解析延伸问题 JSON → {"related","new"}；无效返回 None"""
     m = re.search(r"\{.*\}", tail, re.S)
-    data = json.loads(m.group(0)) if m else {}
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
     result = {
         "related": str(data.get("related", "")).strip()[:60],
         "new": str(data.get("new", "")).strip()[:60],
     }
     if not result["related"] and not result["new"]:
-        return text, None
-    return (body if body.strip() else text), result
+        return None
+    return result
+
+
+def _hide_followup_tail(text: str) -> str:
+    """流式显示时隐藏延伸问题块：截断完整标记及其后内容，
+    并处理被 chunk 切断的标记前缀，避免半截标签闪现；
+    同时兜底模型漏掉标签时裸输出的 {"related":...} JSON 块"""
+    idx = text.find(FOLLOWUP_TAG)
+    if idx != -1:
+        return text[:idx]
+    raw_idx = _find_raw_fu_start(text)
+    if raw_idx != -1:
+        return text[:raw_idx].rstrip()
+    for probe in (FOLLOWUP_TAG, _RAW_FU_HEAD):
+        for i in range(min(len(probe) - 1, len(text)), 0, -1):
+            if text.endswith(probe[:i]):
+                return text[:-i]
+    return text
+
+
+def _parse_followup_tail(text: str):
+    """从全文尾部提取延伸问题块 → (剥离后的正文, followups|None)；
+    优先识别 <followups> 包裹标签，模型漏掉标签时兜底解析裸 JSON 块；
+    均无或解析失败返回原文与 None（调用方走独立生成兜底）"""
+    idx = text.find(FOLLOWUP_TAG)
+    if idx != -1:
+        body = text[:idx].rstrip()
+        tail = text[idx + len(FOLLOWUP_TAG):].split("</followups>")[0]
+        result = _extract_followup_json(tail)
+        if result is None:
+            return text, None
+        return (body if body.strip() else text), result
+    raw_idx = _find_raw_fu_start(text)
+    if raw_idx != -1:
+        result = _extract_followup_json(text[raw_idx:])
+        if result is not None:
+            body = text[:raw_idx].rstrip()
+            return (body if body.strip() else text), result
+    return text, None
 
 
 def _generate_followups(question: str, answer: str):
@@ -1564,7 +1629,9 @@ if right_col is not None:
         else:
             # 顶部占位：st.pdf 自带的 ＋/－ 缩放控件钉在组件右上角，
             # 组件在 shadow DOM 内联渲染、外部 CSS 无法定位内部结构，
-            # 故用占位 div 把渲染位置整体下移（不顶满屏幕/不被头部栏遮挡）
-            st.markdown('<div style="height:56px"></div>', unsafe_allow_html=True)
+            # 故用占位 div 精确控制渲染位置——38px 使 PDF 顶部与左栏
+            # 对话容器顶部对齐（实测对话容器 top=62px），同时不顶满屏幕、
+            # 缩放控件不被部署环境顶部头部栏（约48px）遮挡
+            st.markdown('<div style="height:38px"></div>', unsafe_allow_html=True)
             # 渲染 PDF：放大/缩小用 st.pdf 组件自带的 ＋/－ 控件（PDF 右上角）
             st.pdf(pdf_path, height=850)
