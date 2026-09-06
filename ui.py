@@ -86,12 +86,19 @@ CUSTOM_CSS = """
         position: relative !important;
         height: 100vh !important;
     }
-    /* 收起时隐藏侧边栏内所有内容（除 hamburger 和竖排提示） */
+    /* 收起时隐藏侧边栏内所有内容（除 hamburger 和竖排提示）。
+       注意必须覆盖全部控件类型：文本框/下拉框/折叠面板若遗漏，
+       会在 60px 窄条里竖排挤出形成"乱码"（如自定义模型服务的 Key/模型名称标签） */
     section[data-testid="stSidebar"] .stMarkdown,
     section[data-testid="stSidebar"] .stButton,
     section[data-testid="stSidebar"] .stAlert,
     section[data-testid="stSidebar"] .stFileUploader,
     section[data-testid="stSidebar"] .stImage,
+    section[data-testid="stSidebar"] .stTextInput,
+    section[data-testid="stSidebar"] .stSelectbox,
+    section[data-testid="stSidebar"] [data-testid="stTextInput"],
+    section[data-testid="stSidebar"] [data-testid="stSelectbox"],
+    section[data-testid="stSidebar"] [data-testid="stExpander"],
     section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
     section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInstructions"],
     section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"],
@@ -107,6 +114,11 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"]:is(:hover, :focus-within) .stAlert,
     section[data-testid="stSidebar"]:is(:hover, :focus-within) .stFileUploader,
     section[data-testid="stSidebar"]:is(:hover, :focus-within) .stImage,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stTextInput,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) .stSelectbox,
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stTextInput"],
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stSelectbox"],
+    section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stExpander"],
     section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stFileUploaderDropzone"],
     section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stFileUploaderDropzoneInstructions"],
     section[data-testid="stSidebar"]:is(:hover, :focus-within) [data-testid="stBaseButton-secondary"],
@@ -209,6 +221,59 @@ CUSTOM_CSS = """
         overflow: hidden !important;
     }
 
+    /* 0 高工具型组件 iframe（高度自适应脚本、移动端签名钉住等）：折叠其容器，
+       避免在布局中留下空隙；不影响有实际高度的组件（如追问卡片） */
+    div[data-testid="stElementContainer"]:has(iframe[title="st.iframe"][height="0"]) {
+        height: 0 !important;
+        margin: 0 !important;
+        overflow: hidden !important;
+    }
+
+    /* ========== 桌面端聊天容器视口自适应 ==========
+       st.container(height=750) 在本 Streamlit 版本编译为 emotion 类的固定
+       750px（height/flex 均为 750，非内联样式），有效视口较矮时（Windows 显示
+       缩放 125%/150%、小屏笔记本）底部输入框会被裁出视口外且页面禁止滚动。
+       此处用 :has 结构选择器（直接子级含 stVerticalBlock > stChatMessage 的
+       布局包裹层）+ emotion 类双保险，把高度钳制为 clamp(380px, 100vh-150px, 750px)：
+       高视口维持 750 不变，矮视口按比例收缩，输入框始终可见。 */
+    div[data-testid="column"]:nth-child(1) div:has(
+        > [data-testid="stVerticalBlock"] > [data-testid="stChatMessage"]
+    ),
+    section[data-testid="stMain"] .st-emotion-cache-1lsqjim {
+        height: clamp(380px, calc(100vh - 150px), 750px) !important;
+        max-height: clamp(380px, calc(100vh - 150px), 750px) !important;
+        flex: 0 0 auto !important;
+    }
+
+    /* ========== 矮视口保底（有效高度 <= 640px，如 Windows 150% 缩放的 1080p 屏）：
+       解除页面级滚动禁止，允许自然滚动露出被裁内容（布局自适应由 JS 负责，
+       此处仅兜底防止内容永久不可达） ========== */
+    @media (max-height: 640px) {
+        html, body {
+            overflow: auto !important;
+            height: auto !important;
+        }
+        .stApp {
+            height: auto !important;
+            overflow: auto !important;
+        }
+        .block-container {
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+        }
+        div[data-testid="stHorizontalBlock"],
+        div[data-testid="column"] {
+            height: auto !important;
+            overflow: visible !important;
+        }
+        div[data-testid="column"]:nth-child(2) iframe,
+        div[data-testid="column"]:nth-child(2) div[style*="overflow"] {
+            height: 70vh !important;
+            max-height: 70vh !important;
+        }
+    }
+
     /* ========== 覆盖 st.container(height=700) 为视口高度 ========== */
     /* st.container(height=700) 生成 <div style="...overflow:auto; height:700px;"> */
     /* CSS !important 可覆盖内联样式 */
@@ -229,72 +294,18 @@ CUSTOM_CSS = """
         border-radius: 3px;
     }
 
-    /* ========== 覆盖 st.pdf(height=700) iframe 为视口高度 ========== */
-    div[data-testid="column"]:nth-child(2) iframe {
-        height: calc(100vh - 60px) !important;
-        max-height: calc(100vh - 60px) !important;
+    /* ========== 右栏 PDF 预览（st.pdf）==========
+       st.pdf 自带的 ＋/－ 缩放控件固定在组件右上角（top:0; right:0），
+       且组件经 CCv2 在 shadow DOM 中内联渲染、外部 CSS 无法触达内部结构；
+       顶部下移由 ui.py 中 st.pdf 前的占位 div 完成（渲染位置不顶满屏幕，
+       避免控件被部署环境顶部头部栏遮挡），此处仅保留 iframe 型渲染的高度兜底 */
+    div[data-testid="column"] iframe[title*="streamlit-pdf" i],
+    div[data-testid="column"] iframe[src*="pdf" i] {
+        height: calc(100vh - 140px) !important;
+        max-height: calc(100vh - 140px) !important;
+        width: 100% !important;
+        max-width: 100% !important;
         border: none !important;
-    }
-    /* 如果 st.pdf 也生成了带 overflow 的容器，一并覆盖 */
-    div[data-testid="column"]:nth-child(2) div[style*="overflow"] {
-        height: calc(100vh - 60px) !important;
-        max-height: calc(100vh - 60px) !important;
-        overflow-y: auto !important;
-    }
-
-    /* ========== PDF 缩放按钮（叠加在 st.pdf 之上） ========== */
-    .pdf-zoom-controls {
-        position: absolute;
-        top: 12px;
-        left: 12px;
-        display: flex;
-        gap: 6px;
-        z-index: 100;
-    }
-    .pdf-zoom-btn {
-        width: 32px;
-        height: 32px;
-        border-radius: 6px;
-        background: rgba(40, 40, 40, 0.9);
-        color: #fff;
-        border: 1px solid #555;
-        font-size: 18px;
-        font-weight: bold;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.15s;
-        user-select: none;
-    }
-    .pdf-zoom-btn:hover {
-        background: rgba(70, 70, 70, 0.95);
-    }
-    .pdf-zoom-btn:active {
-        background: rgba(100, 100, 100, 0.95);
-    }
-    .pdf-zoom-label {
-        color: #ccc;
-        font-size: 0.75rem;
-        align-self: center;
-        background: rgba(40, 40, 40, 0.9);
-        padding: 4px 8px;
-        border-radius: 6px;
-        border: 1px solid #555;
-        min-width: 50px;
-        text-align: center;
-    }
-    .pdf-hint {
-        position: absolute;
-        bottom: 12px;
-        right: 12px;
-        background: rgba(0,0,0,0.7);
-        color: #ccc;
-        font-size: 0.7rem;
-        padding: 4px 8px;
-        border-radius: 4px;
-        pointer-events: none;
-        z-index: 100;
     }
 
     /* ========== 禁用 Streamlit 运行时的全屏变暗遮罩 ========== */
@@ -329,10 +340,18 @@ CUSTOM_CSS = """
         background: transparent !important;
     }
 
-    /* ========== 对话布局重构：头像独占一行、正文通栏居中（手机/电脑通用） ========== */
-    /* 消息容器改块级布局：头像行在上，正文自然落到下一行并通栏渲染 */
+    /* ========== 对话布局：头像在左、正文始终在头像右侧（桌面/手机统一） ==========
+       强制 flex 行布局，保证初始问候语、「正在思考/已完成思考」标签、
+       回答正文都出现在头像右侧，而不是被挤到头像下方 */
     [data-testid="stChatMessage"] {
-        display: block !important;
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: flex-start !important;
+    }
+    /* 正文占满头像右侧剩余宽度，允许内部内容正常收缩换行 */
+    [data-testid="stChatMessage"] [data-testid="stChatMessageContent"] {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
     }
     /* 去掉用户头像（占位容器随内容塌缩，提问文字顶格通栏） */
     [data-testid="stChatMessageAvatarUser"] {
@@ -348,15 +367,10 @@ CUSTOM_CSS = """
         height: 46px !important;
         border-radius: 50% !important;
     }
-    /* 「等待中/已完成思考」标签固定在头像右侧同一行：
-       负上移进入头像行且自身占位归零，正文仍从头像下方一行开始 */
+    /* 「等待中/已完成思考」标签：flex 行布局下正文天然位于头像右侧，
+       无需再负边距 hack，仅控制标签与后续正文的间距 */
     [data-testid="stChatMessageContent"] p:first-child:has(span.think-line) {
-        margin-top: -52px !important;
-        margin-left: 58px !important;
-        min-height: 52px !important;
-        box-sizing: border-box !important;
-        display: flex !important;
-        align-items: center !important;
+        margin-bottom: 0.5rem !important;
     }
     /* 侧栏标题：与左下角签名同款楷体斜体 + 蓝→紫→粉渐变（双端统一） */
     .side-title {
@@ -601,8 +615,7 @@ def _build_greeting(is_mobile: bool) -> str:
             "**4. PDF 文档预览**\n"
             "右侧栏展示文档 PDF，可在左侧栏「选择文档」中切换「选题报告」/「案例报告」，当前展示的文档会高亮标注。支持以下操作：\n"
             "- 滚动鼠标滚轮：上下翻阅 PDF 内容\n"
-            "- 点击「➕」/「➖」按钮：放大或缩小 PDF\n"
-            "- 按住 Shift + 滚动鼠标滚轮：横向滚动放大后的 PDF"
+            "- 点击 PDF 右上角「＋」/「－」控件：放大或缩小 PDF"
         )
     return f"""你好！我是智渡小武侯，请随时向我提问关于案例的问题。
 
@@ -1160,8 +1173,8 @@ _THINK_LINE_MARK = '<span class="think-line"></span>'
 
 
 def render_assistant_message(msg):
-    """渲染助手消息：问候语与「已完成思考」状态行经 think-line 标记定位到头像右侧，
-    其余正文照常从头像下方通栏渲染。"""
+    """渲染助手消息：问候语与「已完成思考」状态行携带 think-line 标记
+    （flex 行布局下消息正文整体位于头像右侧，标记仅用于身份识别与样式钩子）。"""
     content = msg["content"]
     marked = bool(msg.get("thinking_done") or msg.get("greeting"))
     if not isinstance(content, list):
@@ -1319,9 +1332,17 @@ with st.sidebar:
             "用你自己的 API Key 回答问题（仅作用于文字问答，图片识别仍走内置视觉模型）。"
             "配置只保存在当前浏览器会话中，不会写入服务器。"
         )
+        # 控件 key 带版本号：点击「清除配置」后版本号 +1 使全部控件换新 key 重挂载。
+        # 直接 pop key 再 st.rerun() 无效——rerun 时前端会把浏览器侧旧控件值原样发回，
+        # 只有换新 key 才能让控件以默认值重新出现，真正清空已填内容
+        if "custom_cfg_ver" not in st.session_state:
+            st.session_state["custom_cfg_ver"] = 0
+        _ver = st.session_state["custom_cfg_ver"]
+
         _prov_label = st.selectbox(
             "供应商",
             ["不使用（默认内置）", "智谱 GLM", "商汤 SenseNova", "OpenRouter", "OpenAI 兼容接口"],
+            key=f"custom_prov_{_ver}",
         )
         _prov_map = {
             "智谱 GLM": "zhipu",
@@ -1329,11 +1350,11 @@ with st.sidebar:
             "OpenRouter": "openrouter",
             "OpenAI 兼容接口": "openai_compat",
         }
-        _c_key = st.text_input("API Key", type="password")
-        _c_model = st.text_input("模型名称（留空使用该供应商推荐默认）")
+        _c_key = st.text_input("API Key", type="password", key=f"custom_key_{_ver}")
+        _c_model = st.text_input("模型名称（留空使用该供应商推荐默认）", key=f"custom_model_{_ver}")
         _c_base = ""
         if _prov_label == "OpenAI 兼容接口":
-            _c_base = st.text_input("接口地址 base_url（如 https://api.example.com/v1）")
+            _c_base = st.text_input("接口地址 base_url（如 https://api.example.com/v1）", key=f"custom_base_{_ver}")
         _need_model = _prov_label in ("OpenRouter", "OpenAI 兼容接口")
         _need_base = _prov_label == "OpenAI 兼容接口"
         if (
@@ -1357,6 +1378,16 @@ with st.sidebar:
                 **({"base_url": _c_base.strip()} if _need_base else {}),
             }
             st.success(f"✅ 将优先使用你的 {_prov_label} 模型回答；调用失败时自动切回内置模型")
+
+        # 一键清除配置：控件 key 版本号 +1（强制重挂载清空表单）并移除生效中的自定义模型
+        if st.button(
+            "清除配置（恢复内置模型）",
+            icon=":material/delete:",
+            use_container_width=True,
+        ):
+            st.session_state["custom_cfg_ver"] += 1
+            st.session_state.pop("custom_llm", None)
+            st.rerun()
 
     st.markdown("---")
 
@@ -1389,7 +1420,7 @@ with st.sidebar:
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智渡小武侯 v1.0.0<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬 </div>",
+        "智渡小武侯 v2.0.0<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬 </div>",
         unsafe_allow_html=True,
     )
     # 手机端：钉住左下角签名（键盘弹起时不随输入栏上浮）
@@ -1520,7 +1551,7 @@ with left_col:
         _finalize_answer_task()
 
 
-# ==================== 右栏：PDF 预览（仅桌面端；缩放按钮 + Shift 横向滚动） ====================
+# ==================== 右栏：PDF 预览（仅桌面端；缩放用 st.pdf 自带控件） ====================
 
 if right_col is not None:
     with right_col:
@@ -1531,48 +1562,9 @@ if right_col is not None:
         if not pdf_path.exists():
             st.error(f"❌ 未找到 `{pdf_path.name}`，请放入项目根目录")
         else:
-            # 在 PDF 上方放缩放控制条（用 columns 让按钮和 PDF 在同一列）
-            zoom_col1, zoom_col2, zoom_col3 = st.columns([1, 1, 6])
-            with zoom_col1:
-                zoom_in_btn = st.button("➕", key="pdf_zoom_in", help="放大 PDF")
-            with zoom_col2:
-                zoom_out_btn = st.button("➖", key="pdf_zoom_out", help="缩小 PDF")
-            with zoom_col3:
-                st.caption("滚轮上下滚动 · Shift+滚轮横向滚动")
-
-            # 初始化缩放状态
-            if "pdf_zoom" not in st.session_state:
-                st.session_state["pdf_zoom"] = 1.0
-
-            # 处理缩放按钮
-            if zoom_in_btn:
-                st.session_state["pdf_zoom"] = min(3.0, st.session_state["pdf_zoom"] + 0.2)
-            if zoom_out_btn:
-                st.session_state["pdf_zoom"] = max(0.5, st.session_state["pdf_zoom"] - 0.2)
-
-            zoom = st.session_state["pdf_zoom"]
-
-            # 渲染 PDF
+            # 顶部占位：st.pdf 自带的 ＋/－ 缩放控件钉在组件右上角，
+            # 组件在 shadow DOM 内联渲染、外部 CSS 无法定位内部结构，
+            # 故用占位 div 把渲染位置整体下移（不顶满屏幕/不被头部栏遮挡）
+            st.markdown('<div style="height:56px"></div>', unsafe_allow_html=True)
+            # 渲染 PDF：放大/缩小用 st.pdf 组件自带的 ＋/－ 控件（PDF 右上角）
             st.pdf(pdf_path, height=850)
-
-            # 用 CSS 动态缩放 PDF，并允许横向滚动
-            # 新版 st.pdf 为 bidi 组件：内容渲染在宿主元素 shadow DOM 的 canvas 上，
-            # 无法用选择器直接命中，因此对宿主 [data-testid="stBidiComponentIsolated"]
-            # 整体做 transform: scale()；缩放超宽时由其元素容器提供横向滚动
-            # （Chrome 原生支持 Shift+滚轮横向滚动可滚动容器）
-            pdf_control_html = f"""
-            <style>
-                /* PDF 元素容器设为可横向滚动，容纳放大后的内容 */
-                div[data-testid="stElementContainer"]:has([data-testid="stBidiComponentIsolated"]) {{
-                    overflow-x: auto !important;
-                    overflow-y: auto !important;
-                }}
-                /* 缩放 st.pdf 的 bidi 宿主（连带 shadow DOM 内的 canvas） */
-                section[data-testid="stMain"] [data-testid="stBidiComponentIsolated"] {{
-                    transform: scale({zoom}) !important;
-                    transform-origin: top left !important;
-                    width: {100 / zoom}% !important;
-                }}
-            </style>
-            """
-            st.markdown(pdf_control_html, unsafe_allow_html=True)

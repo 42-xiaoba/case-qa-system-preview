@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="智能案例问答系统 API",
     description="基于 GLM-4.7-Flash 的案例问答后端服务",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 # CORS 配置，允许 Streamlit 前端跨域访问
