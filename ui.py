@@ -169,6 +169,14 @@ CUSTOM_CSS = """
         background: rgba(88, 166, 255, 0.15);
         box-shadow: 0 0 0 1.5px #58a6ff, 0 0 12px rgba(88, 166, 255, 0.45);
     }
+    /* 选项内容居中展示（文档卡片 / 视角卡片通用） */
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"] {
+        justify-content: center;
+    }
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"] p,
+    section[data-testid="stSidebar"] [data-testid="stRadio"] [data-testid="stRadioOption"] [data-testid="stMarkdownContainer"] {
+        text-align: center;
+    }
 
     /* ========== 整页固定：禁止页面级滚动 ========== */
     html, body {
@@ -541,7 +549,7 @@ API_BASE_URL = "http://localhost:8000"
 # 右侧 PDF 预览的文档映射：选项名 → 根目录文件名
 DOC_FILES = {
     "选题报告": "case_report.pdf",
-    "案例报告（一稿）": "清华案例分析报告一稿.pdf",
+    "案例报告": "当AI成为数据的摆渡人：基层减负的供需协同.pdf",
 }
 
 
@@ -585,13 +593,13 @@ def _build_greeting(is_mobile: bool) -> str:
     if is_mobile:
         item3 = (
             "**4. 下载 PDF 文档**\n"
-            "在左侧栏「下载文档」中点击对应按钮，即可把《选题报告》或《案例报告（一稿）》"
+            "在左侧栏「下载文档」中点击对应按钮，即可把《选题报告》或《案例报告》"
             "的 PDF 全文下载到手机本地查看。（使用电脑可在线浏览）"
         )
     else:
         item3 = (
             "**4. PDF 文档预览**\n"
-            "右侧栏展示文档 PDF，可在左侧栏「选择文档」中切换「选题报告」/「案例报告（一稿）」，当前展示的文档会高亮标注。支持以下操作：\n"
+            "右侧栏展示文档 PDF，可在左侧栏「选择文档」中切换「选题报告」/「案例报告」，当前展示的文档会高亮标注。支持以下操作：\n"
             "- 滚动鼠标滚轮：上下翻阅 PDF 内容\n"
             "- 点击「➕」/「➖」按钮：放大或缩小 PDF\n"
             "- 按住 Shift + 滚动鼠标滚轮：横向滚动放大后的 PDF"
@@ -1381,7 +1389,7 @@ with st.sidebar:
 
     st.markdown(
         '<div style="font-size: 0.8rem; color: #999; text-align: center;">'
-        "智渡小武侯 v0.4.0<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬 </div>",
+        "智渡小武侯 v1.0.0<br>团队成员：<br>卜天伊 冯思杰 李欣怡 杨宏宇<br>指导老师：<br>庞祯敬 </div>",
         unsafe_allow_html=True,
     )
     # 手机端：钉住左下角签名（键盘弹起时不随输入栏上浮）

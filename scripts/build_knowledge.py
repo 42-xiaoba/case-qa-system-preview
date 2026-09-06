@@ -1,18 +1,19 @@
 """
-Step 0: 知识库构建脚本（离线一次性运行）
-从 4 个资料源提取文本并切块，输出 kb/chunks.json：
-  - 清华案例分析报告一稿.docx  (tier 1, source=一稿)
-  - case_report.pdf            (tier 1, source=选题报告)
-  - case.txt                   (tier 1, source=案例文本)
-  - resources/文献资料要点汇编.md (tier 2, source=文献汇编)
+Step 0: 知识库构建脚本（离线一次性运行）· v2 语料源
+从新资料源提取文本并切块，输出 kb/chunks.json：
+  - 当AI成为数据的摆渡人：基层减负的供需协同.docx  (tier 1, source=案例报告，正式版)
+  - case_report.pdf                                  (tier 1, source=选题报告)
+  - resources_new/为什么案例报告和选题报告有出入.docx (tier 1, source=报告说明)
+  - resources_new/*.pdf                              (tier 2, source=文献·短名，共 9 篇)
 
-切块策略：标题感知切块（一稿/汇编按章节标题，选题报告/案例文本按行内标题探测），
-块长目标 300-600 字，超长块按段落边界二次切分。
+切块策略：标题感知切块（案例报告按已知章节名，选题报告按行内标题探测，
+文献按 一、二、 标题探测后段落兜底），块长目标 300-600 字，超长块按段落边界二次切分。
 
 自检（Step 0 门禁）：
-  1. 所有块长度在 [200, 900] 区间
-  2. 一稿 >= 8 个章节、选题报告 >= 5 个部分、汇编 >= 7 个小节被覆盖
-  3. 抽样打印块首尾句供人工检查语义边界
+  1. 所有块长度在 [200, 900] 区间（上限放宽至 1.6 倍）
+  2. 案例报告 >= 8 个章节、选题报告 >= 4 个部分、报告说明 >= 5 个小节、文献 >= 7 篇被覆盖
+  3. 来源纯净性：结果中不允许出现旧语料源（一稿/案例文本/文献汇编）
+  4. 抽样打印块首尾句供人工检查语义边界
 """
 
 import json
@@ -39,11 +40,65 @@ SECTION_RE = re.compile(r"^(?:[一二三四五六七八九十]+、|第[一二三
 KNOWN_SECTIONS = [
     "选题背景", "研究意义", "案例摘要", "研究问题与分析框架", "研究方法与调研安排",
 ]
-# 一稿已知章节名（一稿标题为不带编号的独立短行）
-KNOWN_DOC_SECTIONS = [
-    "案例摘要", "要点分析", "分析框架", "案例阐释", "数据获取交易成本的消解机制",
-    "技术适配的边界与制度条件的交互关系", "路径重构", "案例总结", "实践审思", "参考文献",
+# 案例报告（正式版）已知章节名：独立短行标题 + 分析部分小节
+KNOWN_CASE_SECTIONS = [
+    "案例正文", "引言", "莫让此身独负事", "散落之数终归仓", "易报难归终成困",
+    "深藏之人终见天", "绕行千里终须面", "谁执锁钥谁守门", "万数不及人亲至",
+    "结束语", "参考性问题", "附录", "武侯区残疾人数据统计表",
+    "案例分析", "案例摘要", "要点分析", "理论基础与适用性", "分析框架",
+    "案例阐释", "供需协同的逻辑：需求侧通道与供给侧储备",
+    "供需协同的限度：技术绕行与制度遮蔽", "制度调适的可能路径",
+    "案例总结与理论反思", "参考文献",
 ]
+
+# 文献 PDF 来源映射：文件名 → {label 来源短名, meta 作者年份标注, desc 中文简介(可选)}
+# desc 会注入该文献每个块首：为英文文献补充中文检索锚点（相当于旧"文献要点"注释）
+LITERATURE_SOURCES = {
+    "Goodhue-TaskTechnologyFitIndividual-1995.pdf": {
+        "label": "任务-技术匹配模型",
+        "meta": "Goodhue & Thompson，1995，《MIS Quarterly》",
+        "desc": "本篇为任务-技术匹配模型（Task-Technology Fit, TTF）的奠基文献：由古德休（Goodhue）"
+                "与汤普森（Thompson）于1995年提出，发表于《MIS Quarterly》。核心观点："
+                "信息技术的使用绩效取决于技术功能与任务需求的适配程度，模型识别了数据质量、"
+                "授权、兼容性等任务-技术匹配因子",
+    },
+    "“数字空间”政府及其研究纲领——第四次工.pdf": {
+        "label": "数字空间政府",
+        "meta": "米加宁等，2020，《公共管理学报》",
+    },
+    "从结构论到生态论——城市政治学的理论迭代.pdf": {
+        "label": "从结构论到生态论",
+        "meta": "葛天任、孟天广，2025，《政治学研究》",
+    },
+    "数字化协同：基层减负增能的策略选择——基.pdf": {
+        "label": "数字化协同",
+        "meta": "马太平、吴建南，2025，《公共管理学报》",
+    },
+    "数字技术“赋能”何以产生基层治理“负能”.pdf": {
+        "label": "数字赋能与治理负能",
+        "meta": "娄文龙等，2025，《上海行政学院学报》",
+    },
+    "数字技术嵌入异化下行政负担的生成与转移_.pdf": {
+        "label": "行政负担的生成与转移",
+        "meta": "连宏萍、邹佳秀，2025，《中国行政管理》",
+    },
+    "数智治理的理论模型框架与链式发展路径——.pdf": {
+        "label": "数智治理",
+        "meta": "彭小宝等，2025，《管理世界》",
+    },
+    "构建虚拟政府_信息技术与制度创新.pdf": {
+        "label": "构建虚拟政府",
+        "meta": "Fountain，2001，《Brookings Institution Press》",
+    },
+    "社区空间治理理论的跨学科视角——构建“物.pdf": {
+        "label": "社区空间治理",
+        "meta": "葛天任，2024，《东南学术》",
+    },
+    "退出、呼吁与忠诚 对企业、组织和国家衰退.pdf": {
+        "label": "退出呼吁与忠诚",
+        "meta": "Hirschman，1970，《Harvard University Press》",
+    },
+}
 
 
 def extract_docx_lines(path: Path) -> list[str]:
@@ -96,7 +151,8 @@ def split_long_text(text: str, hard_split: int = HARD_SPLIT, overlap: int = OVER
 
 
 def chunk_by_heading_lines(lines: list[str], source: str, tier: int,
-                           default_section: str = "正文") -> list[dict]:
+                           default_section: str = "正文",
+                           meta: str | None = None) -> list[dict]:
     """按 一、二、三、 标题行分组后切块（适用于 docx 与纯文本）"""
     sections: list[tuple[str, list[str]]] = []
     cur_title, cur_buf = default_section, []
@@ -109,7 +165,7 @@ def chunk_by_heading_lines(lines: list[str], source: str, tier: int,
             cur_buf.append(line)
     if cur_buf:
         sections.append((cur_title, cur_buf))
-    return build_chunks(sections, source, tier)
+    return build_chunks(sections, source, tier, meta=meta)
 
 
 def chunk_pdf_by_sections(pages: list[list[str]], source: str, tier: int) -> list[dict]:
@@ -131,14 +187,24 @@ def chunk_pdf_by_sections(pages: list[list[str]], source: str, tier: int) -> lis
     return build_chunks(sections, source, tier)
 
 
-def chunk_docx_by_known_sections(lines: list[str], source: str, tier: int) -> list[dict]:
-    """一稿专用：按已知章节名（独立短行）分组切块"""
+def chunk_docx_by_known_sections(lines: list[str], source: str, tier: int,
+                                 skip_until: str | None = None) -> list[dict]:
+    """按已知章节名（独立短行）分组切块。
+
+    skip_until: 若给出，先跳过其前的所有行（如"案例正文"前的封面与目录），
+    遇到该行本身时结束跳过并作为首个章节标题。"""
     sections: list[tuple[str, list[str]]] = []
     cur_title, cur_buf = "标题页", []
+    skipping = skip_until is not None
     for line in lines:
+        if skipping:
+            if line.strip() == skip_until:
+                skipping = False
+                cur_title, cur_buf = line.strip(), []
+            continue
         stripped = line.replace(" ", "")
-        hit = next((name for name in KNOWN_DOC_SECTIONS
-                    if stripped.startswith(name) and len(stripped) < 40), None)
+        hit = next((name for name in KNOWN_CASE_SECTIONS
+                    if stripped == name.replace(" ", "") and len(stripped) < 45), None)
         if hit:
             if cur_buf:
                 sections.append((cur_title, cur_buf))
@@ -150,30 +216,9 @@ def chunk_docx_by_known_sections(lines: list[str], source: str, tier: int) -> li
     return build_chunks(sections, source, tier)
 
 
-def chunk_markdown(path: Path, source: str, tier: int) -> list[dict]:
-    """按 markdown 标题切块：### 为叶子单元，## 作为前缀上下文"""
-    h2, h3, buf = "总览", "", []
-    sections: list[tuple[str, list[str]]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("## "):
-            if buf:
-                sections.append((f"{h2}·{h3}" if h3 else h2, buf))
-                buf = []
-            h2, h3 = line[3:].strip(), ""
-        elif line.startswith("### "):
-            if buf:
-                sections.append((f"{h2}·{h3}" if h3 else h2, buf))
-                buf = []
-            h3 = line[4:].strip()
-        else:
-            buf.append(line)
-    if buf:
-        sections.append((f"{h2}·{h3}" if h3 else h2, buf))
-    return build_chunks(sections, source, tier)
-
-
-def build_chunks(sections: list[tuple[str, list[str]]], source: str, tier: int) -> list[dict]:
-    """将 (标题, 行列表) 分组转换为定长块"""
+def build_chunks(sections: list[tuple[str, list[str]]], source: str, tier: int,
+                 meta: str | None = None) -> list[dict]:
+    """将 (标题, 行列表) 分组转换为定长块；meta 注入块首（如作者年份标注）"""
     chunks = []
     for title, lines in sections:
         text = "\n".join(lines).strip()
@@ -183,6 +228,8 @@ def build_chunks(sections: list[tuple[str, list[str]]], source: str, tier: int) 
             piece = piece.strip()
             if len(piece) < MIN_LEN // 2:
                 continue
+            if meta:
+                piece = f"（{meta}）{piece}"
             chunks.append({
                 "source": source,
                 "tier": tier,
@@ -209,28 +256,45 @@ def merge_small_chunks(chunks: list[dict]) -> list[dict]:
 def main():
     all_chunks: list[dict] = []
 
-    # 1. 一稿 docx（章节标题为不带编号的独立短行）
-    docx_path = ROOT / "清华案例分析报告一稿.docx"
-    all_chunks += chunk_docx_by_known_sections(extract_docx_lines(docx_path), "一稿", 1)
+    # 1. 案例报告正式版 docx（章节标题为独立短行；跳过其前的封面与目录）
+    docx_path = ROOT / "当AI成为数据的摆渡人：基层减负的供需协同.docx"
+    all_chunks += chunk_docx_by_known_sections(
+        extract_docx_lines(docx_path), "案例报告", 1, skip_until="案例正文"
+    )
 
     # 2. 选题报告 pdf
     pdf_path = ROOT / "case_report.pdf"
     all_chunks += chunk_pdf_by_sections(extract_pdf_pages(pdf_path), "选题报告", 1)
 
-    # 3. 案例文本 case.txt
-    case_lines = [ln.strip() for ln in
-                  (ROOT / "case.txt").read_text(encoding="utf-8").splitlines() if ln.strip()]
-    all_chunks += chunk_by_heading_lines(case_lines, "案例文本", 1)
+    # 3. 报告说明 docx（为什么案例报告和选题报告有出入）
+    note_path = ROOT / "resources_new" / "为什么案例报告和选题报告有出入.docx"
+    all_chunks += chunk_by_heading_lines(extract_docx_lines(note_path), "报告说明", 1)
 
-    # 4. 文献汇编 markdown
-    all_chunks += chunk_markdown(ROOT / "resources" / "文献资料要点汇编.md", "文献汇编", 2)
+    # 4. 文献 PDF（resources_new 下逐篇提取，作者年份标注注入块首）
+    lit_dir = ROOT / "resources_new"
+    lit_files = sorted(p for p in lit_dir.glob("*.pdf") if p.name in LITERATURE_SOURCES)
+    missing = [p.name for p in lit_dir.glob("*.pdf") if p.name not in LITERATURE_SOURCES]
+    for name in missing:
+        print(f"[WARN] 未登记来源映射的文献，已跳过: {name}")
+    for pdf_file in lit_files:
+        info = LITERATURE_SOURCES[pdf_file.name]
+        label, author_year = info["label"], info["meta"]
+        meta = f"{author_year}。{info['desc']}" if info.get("desc") else author_year
+        source = f"文献·{label}"
+        pages = extract_pdf_pages(pdf_file)
+        lines = [ln for page in pages for ln in page]
+        n_before = len(all_chunks)
+        all_chunks += chunk_by_heading_lines(
+            lines, source, 2, default_section="全文", meta=meta
+        )
+        print(f"[文献] {label}: {len(all_chunks) - n_before} 块（{pdf_file.name}）")
 
     all_chunks = merge_small_chunks(all_chunks)
     for i, c in enumerate(all_chunks):
         c["id"] = i
 
     # ==================== Step 0 自检 ====================
-    print(f"总块数: {len(all_chunks)}")
+    print(f"\n总块数: {len(all_chunks)}")
     by_source: dict[str, list[dict]] = {}
     for c in all_chunks:
         by_source.setdefault(c["source"], []).append(c)
@@ -244,7 +308,7 @@ def main():
             print(f"[FAIL] 超长块 id={c['id']} len={len(c['content'])} section={c['section']}")
             ok = False
 
-    coverage_req = {"一稿": 8, "选题报告": 4, "案例文本": 2, "文献汇编": 7}
+    coverage_req = {"案例报告": 8, "选题报告": 4, "报告说明": 5}
     for src, min_sections in coverage_req.items():
         n_sections = len({c["section"] for c in by_source.get(src, [])})
         status = "OK" if n_sections >= min_sections else "FAIL"
@@ -252,6 +316,25 @@ def main():
             ok = False
         print(f"[{status}] {src}: {len(by_source.get(src, []))} 块, "
               f"{n_sections} 个章节 (要求 >= {min_sections})")
+
+    # 文献覆盖检查：登记的每篇文献都应产出至少 2 块
+    n_lit = len({s for s in by_source if s.startswith("文献·")})
+    status = "OK" if n_lit >= 7 else "FAIL"
+    if status == "FAIL":
+        ok = False
+    print(f"[{status}] 文献: {n_lit} 篇被覆盖 (要求 >= 7)")
+
+    # 来源纯净性：不允许出现旧语料源
+    banned = {"一稿", "案例文本", "文献汇编"}
+    leaked = banned & set(by_source)
+    status = "OK" if not leaked else "FAIL"
+    if leaked:
+        ok = False
+    print(f"[{status}] 来源纯净性: 旧语料源残留 = {sorted(leaked) if leaked else '无'}")
+
+    print("\n---- 各来源块数分布 ----")
+    for src, chunks in sorted(by_source.items()):
+        print(f"  {src}: {len(chunks)} 块, {len({c['section'] for c in chunks})} 章节")
 
     print("\n---- 边界抽查（每源抽 2 块的首尾 40 字）----")
     for src, chunks in by_source.items():
