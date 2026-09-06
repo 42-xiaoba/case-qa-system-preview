@@ -243,6 +243,29 @@ CUSTOM_CSS = """
         max-width: 100% !important;
     }
 
+    /* ========== 右栏横向滚动兜底 ==========
+       st.pdf 经 CCv2 在 shadow root 内渲染并自带内部滚动容器，画布溢出
+       被其裁剪、不透出到列（横向滚动条与拖拽由 _pdf_pan_js 穿透注入）；
+       此处仅对 light-DOM 直渲染形态兜底打开横向滚动 */
+    div[data-testid="stColumn"]:nth-child(2) {
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        scrollbar-color: #555 #161b22;
+    }
+    div[data-testid="stColumn"]:nth-child(2)::-webkit-scrollbar {
+        height: 10px;
+    }
+    div[data-testid="stColumn"]:nth-child(2)::-webkit-scrollbar-track {
+        background: #161b22;
+    }
+    div[data-testid="stColumn"]:nth-child(2)::-webkit-scrollbar-thumb {
+        background: #555;
+        border-radius: 5px;
+    }
+    div[data-testid="stColumn"]:nth-child(2)::-webkit-scrollbar-thumb:hover {
+        background: #777;
+    }
+
     /* ========== 桌面端聊天容器视口自适应 ==========
        st.container(height=750) 在本 Streamlit 版本编译为 emotion 类的固定
        750px（height/flex 均为 750，非内联样式），有效视口较矮时（Windows 显示
@@ -276,10 +299,18 @@ CUSTOM_CSS = """
             max-height: none !important;
             overflow: visible !important;
         }
-        div[data-testid="stHorizontalBlock"],
-        div[data-testid="stColumn"] {
+        div[data-testid="stHorizontalBlock"] {
+            height: auto !important;
+        }
+        div[data-testid="stColumn"]:nth-child(1) {
             height: auto !important;
             overflow: visible !important;
+        }
+        /* 右栏保持横向滚动 + 纵向裁剪（矮视口下 PDF 区域 70vh 兜底见下） */
+        div[data-testid="stColumn"]:nth-child(2) {
+            height: auto !important;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
         }
         div[data-testid="stColumn"]:nth-child(2) iframe,
         div[data-testid="stColumn"]:nth-child(2) div[style*="overflow"] {
@@ -629,7 +660,9 @@ def _build_greeting(is_mobile: bool) -> str:
             "**4. PDF 文档预览**\n"
             "右侧栏展示文档 PDF，可在左侧栏「选择文档」中切换「选题报告」/「案例报告」，当前展示的文档会高亮标注。支持以下操作：\n"
             "- 滚动鼠标滚轮：上下翻阅 PDF 内容\n"
-            "- 点击 PDF 右上角「＋」/「－」控件：放大或缩小 PDF"
+            "- 点击 PDF 右上角「＋」/「－」控件：放大或缩小 PDF\n"
+            "- 按住 Shift + 滚动鼠标滚轮：横向滑动放大后的 PDF\n"
+            "- 放大后按住鼠标左键左右拖动，或拖动 PDF 底部的横向滚动条：横向平移查看 PDF"
         )
     return f"""你好！我是智渡小武侯，请随时向我提问关于案例的问题。
 
@@ -1618,6 +1651,64 @@ with left_col:
 
 # ==================== 右栏：PDF 预览（仅桌面端；缩放用 st.pdf 自带控件） ====================
 
+def _pdf_pan_js():
+    """右栏 PDF 拖拽平移 + 可见横向滚动条：按住鼠标左键拖动即可滑动 PDF。
+    st.pdf 经 CCv2 渲染，页面画布的滚动溢出被组件内部滚动容器裁剪、
+    不透出到外部（实测列 scrollWidth 不随画布变宽），故需穿透其
+    open shadow root：事件用 document 捕获委托（shadow 内事件会冒泡
+    出来且 composedPath 可见），拖拽驱动内部滚动容器的 scrollLeft/
+    scrollTop；同时向 shadow root 注入 adoptedStyleSheets 显示横向滚动条。
+    细节：move 超 3px 才算拖拽，松开后拦截一次 click，防止拖拽结束时
+    误触 PDF 右上角的缩放按钮；mousedown 的 preventDefault 不影响
+    缩放按钮点击；内部滚动条为浏览器原生托管，不触发页面鼠标事件，
+    与拖拽互不干扰。"""
+    js = (
+        "<script>(function(){"
+        "var d=parent.document,w=parent.window;"
+        "var ISO='[data-testid=\"stBidiComponentIsolated\"]',COL='div[data-testid=\"stColumn\"]';"
+        "var down=false,sx=0,sy=0,sl=0,st=0,moved=false,scroller=null,iso=null;"
+        "try{w.__panReady=1;}catch(e){}"
+        "var inPath=function(e,sel){var p=e.composedPath();"
+        "for(var i=0;i<p.length;i++){if(p[i].matches&&p[i].matches(sel))return p[i];}return null;};"
+        "var scrollerOf=function(root){var best=null,bh=-1;"
+        "root.querySelectorAll('*').forEach(function(el){"
+        "var cs=getComputedStyle(el);"
+        "if((cs.overflowY==='auto'||cs.overflowY==='scroll')&&el.clientHeight>bh){bh=el.clientHeight;best=el;}});"
+        "return best;};"
+        "var styleShadow=function(el){"
+        "try{if(el.shadowRoot&&!el.shadowRoot.__panStyled){"
+        "var st=d.createElement('style');"
+        "st.textContent='::-webkit-scrollbar{display:block!important;height:12px!important;width:12px!important}"
+        "::-webkit-scrollbar-track{background:#161b22}"
+        "::-webkit-scrollbar-thumb{background:#555;border-radius:6px}"
+        "::-webkit-scrollbar-thumb:hover{background:#777}';"
+        "el.shadowRoot.appendChild(st);"
+        "el.shadowRoot.__panStyled=true;}}catch(e){}};"
+        "d.addEventListener('mousedown',function(e){"
+        "if(e.button!==0)return;"
+        "var host=inPath(e,ISO),sc=null;"
+        "if(host){styleShadow(host);sc=scrollerOf(host.shadowRoot);}"
+        "else{host=inPath(e,COL);if(host)sc=host;}"
+        "if(!host||!sc)return;"
+        "if(sc.scrollWidth<=sc.clientWidth+1&&sc.scrollHeight<=sc.clientHeight+1)return;"
+        "down=true;moved=false;iso=host;scroller=sc;"
+        "sx=e.pageX;sy=e.pageY;sl=sc.scrollLeft;st=sc.scrollTop;"
+        "e.preventDefault();host.style.cursor='grabbing';},true);"
+        "d.addEventListener('mousemove',function(e){"
+        "if(!down||!scroller)return;"
+        "var dx=e.pageX-sx,dy=e.pageY-sy;"
+        "if(Math.abs(dx)>3||Math.abs(dy)>3)moved=true;"
+        "if(moved){scroller.scrollLeft=sl-dx;scroller.scrollTop=st-dy;}},true);"
+        "d.addEventListener('mouseup',function(){"
+        "if(down&&iso)iso.style.cursor='grab';down=false;},true);"
+        "d.addEventListener('click',function(e){"
+        "if(!moved)return;moved=false;"
+        "if(inPath(e,ISO)||inPath(e,COL)){e.stopPropagation();e.preventDefault();}},true);"
+        "})();</script>"
+    )
+    components.html(js, height=0, scrolling=False)
+
+
 if right_col is not None:
     with right_col:
         # 根据侧栏「选择文档」的选中项切换 PDF（选中项在侧栏高亮标注）
@@ -1633,5 +1724,7 @@ if right_col is not None:
             # 对话容器顶部对齐（实测对话容器 top=62px），同时不顶满屏幕、
             # 缩放控件不被部署环境顶部头部栏（约48px）遮挡
             st.markdown('<div style="height:38px"></div>', unsafe_allow_html=True)
-            # 渲染 PDF：放大/缩小用 st.pdf 组件自带的 ＋/－ 控件（PDF 右上角）
+            # 渲染 PDF：放大/缩小用 st.pdf 组件自带的 ＋/－ 控件（PDF 右上角）；
+            # 放大后横向查看：右栏横向滚动条（CSS）+ 按住左键拖动平移（JS）
             st.pdf(pdf_path, height=850)
+            _pdf_pan_js()
