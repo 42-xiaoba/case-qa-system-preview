@@ -132,7 +132,7 @@ class PromptManager:
         Returns:
             完整的多模态消息列表
         """
-        system_prompt = self.build_system_prompt(perspective=perspective)
+        system_prompt = self.build_vision_system_prompt(perspective=perspective)
         messages = [{"role": "system", "content": system_prompt}]
 
         # 添加历史对话（如果有）
@@ -147,10 +147,67 @@ class PromptManager:
         messages.append({"role": "user", "content": user_content})
         return messages
 
+    def build_vision_system_prompt(self, perspective: str | None = None) -> str:
+        """
+        组装视觉问答专用的系统提示词
+
+        与文本路径的区别：不注入案例全文。视觉模型的首要依据是用户上传的
+        图片本身——若注入以"请仔细阅读"为强指令的案例全文，模型会把案例
+        文本中的图表（如案例报告里的"图1 政策脉络图"）误认作用户上传的
+        图片并照文本作答，导致回答偏离图片内容。
+
+        组装结构：
+        [人设与角色] → [视觉问答核心规则] → [回答视角设定（可选）]
+        → [案例背景速览（Tier0 知识卡，有界）] → [输出格式要求]
+        """
+        sections = [
+            "=" * 60,
+            "【系统人设与角色】",
+            "=" * 60,
+            self.settings.prompt_system_role,
+            "",
+            "=" * 60,
+            "【视觉问答核心规则】",
+            "=" * 60,
+            "1. 用户会上传一张图片（案例图表、流程图、政策截图等）并提问。"
+            "回答的首要与主要依据是你亲眼观察到的图片内容：先看清图中有什么，再结合问题作答。",
+            "2. 严禁把案例资料中的图表与用户上传的图片混淆——案例报告里也有自己的"
+            "\"图1\"\"图2\"，它们和用户上传的图片是两回事。回答中只允许描述用户上传图片里真实可见的内容。",
+            "3. 案例知识（见下方背景速览）仅用于辅助解释图片内容；"
+            "若图片内容与案例资料不一致，以图片为准，并可指出差异。",
+            "4. 图片模糊、无法辨认，或图中没有问题所涉内容时，如实说明，绝不臆造图中不存在的元素。",
+            "5. 回答图片本身的内容时无需标注案例出处；只有当主动引用案例背景知识补充解释时，标注（案例背景）。",
+        ]
+        perspective_block = self.build_perspective_instruction(perspective)
+        if perspective_block:
+            sections += [
+                "",
+                "=" * 60,
+                "【回答视角设定】",
+                "=" * 60,
+                "在完全遵守上述规则的前提下，按以下视角要求组织表达：",
+                perspective_block,
+            ]
+        tier0 = self._tier0_card()
+        sections += [
+            "",
+            "=" * 60,
+            "【案例背景速览（仅作理解图片的辅助背景，不是用户上传的图片）】",
+            "=" * 60,
+            tier0 if tier0 else "（无）",
+            "",
+            "=" * 60,
+            "【输出格式要求】",
+            "=" * 60,
+            self.settings.prompt_output_format,
+        ]
+        return "\n".join(sections)
+
     # ---- RAG 路径：预算制组装（Step 3）----
     # 注意：RAG 路径的 system prompt 不再注入 case.txt 全文，
     # 案例事实由检索块提供（避免 5 万字全文导致的 lost-in-the-middle 与高延迟）。
-    # case.txt 全文注入仅保留给视觉路径 build_system_prompt()。
+    # 视觉路径同样不注入全文（见 build_vision_system_prompt）：
+    # 案例知识由 Tier0 知识卡以背景速览形式提供，首要依据是用户上传的图片。
 
     def _tier0_card(self) -> str:
         """读取常备知识卡（Tier0），带字符预算截断"""

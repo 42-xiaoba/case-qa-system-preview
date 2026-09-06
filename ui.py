@@ -973,22 +973,28 @@ _RAW_FU_HEAD = '{"related"'
 _RAW_FU_WINDOW = 600
 
 
-def _find_raw_fu_start(text: str) -> int:
+def _find_raw_fu_start(text: str, closed_only: bool = False) -> int:
     """在文本末尾窗口内查找裸延伸 JSON 块起点；仅当该 JSON 是文本的
-    末尾内容（已完整闭合的平面 JSON，或流式传输中尚未闭合）时才成立，
-    避免误伤正文中合法出现 {"related": 字样的回答；无则返回 -1"""
+    末尾内容时才成立，避免误伤正文中合法出现 {"related": 字样的回答；
+    无则返回 -1。
+    候选从窗口内最后一个向前验证：正文更早处也出现 {"related": 字样时，
+    只有末尾那个真延伸块会通过校验。
+    closed_only=True（finalize 定稿用）要求 JSON 已完整闭合——流式中
+    "尚未闭合也剥"的宽纵仅限 _hide_followup_tail 的实时显示，否则正文
+    中提到 {"related": 字样且后文恰无大括号时会在定稿时被误删"""
     window = text[-_RAW_FU_WINDOW:]
-    m = _RAW_FU_JSON_RE.search(window)
-    if not m:
-        return -1
-    start = len(text) - len(window) + m.start()
-    tail = text[start:]
-    if "}" not in tail:
-        # 流式传输中：JSON 尚未闭合，其后没有任何其他内容
-        return start
-    if re.fullmatch(r"\{[^{}]*\}", tail.strip(), re.S):
-        # 已闭合：整体是末尾的平面 JSON 块，其后无正文
-        return start
+    matches = list(_RAW_FU_JSON_RE.finditer(window))
+    for m in reversed(matches):
+        start = len(text) - len(window) + m.start()
+        tail = text[start:]
+        if "}" not in tail:
+            if closed_only:
+                break  # 定稿时未闭合说明不是延伸块，不再考虑更早候选
+            # 流式传输中：JSON 尚未闭合，其后没有任何其他内容
+            return start
+        if re.fullmatch(r"\{[^{}]*\}", tail.strip(), re.S):
+            # 已闭合：整体是末尾的平面 JSON 块，其后无正文
+            return start
     return -1
 
 
@@ -1030,21 +1036,28 @@ def _hide_followup_tail(text: str) -> str:
 def _parse_followup_tail(text: str):
     """从全文尾部提取延伸问题块 → (剥离后的正文, followups|None)；
     优先识别 <followups> 包裹标签，模型漏掉标签时兜底解析裸 JSON 块；
-    均无或解析失败返回原文与 None（调用方走独立生成兜底）"""
+    解析失败但泄漏形态成立（标签在/末尾裸 JSON）时同样剥离正文，
+    返回 (剥离正文, None)——卡片由调用方的独立生成兜底，绝不让 JSON 上屏"""
     idx = text.find(FOLLOWUP_TAG)
     if idx != -1:
         body = text[:idx].rstrip()
         tail = text[idx + len(FOLLOWUP_TAG):].split("</followups>")[0]
         result = _extract_followup_json(tail)
-        if result is None:
-            return text, None
-        return (body if body.strip() else text), result
-    raw_idx = _find_raw_fu_start(text)
+        if result is not None:
+            return (body if body.strip() else text), result
+        if body.strip():
+            # 标签在但 JSON 畸形：剥离整个尾部，不泄漏到正文
+            return body, None
+        return text, None
+    raw_idx = _find_raw_fu_start(text, closed_only=True)
     if raw_idx != -1:
         result = _extract_followup_json(text[raw_idx:])
+        body = text[:raw_idx].rstrip()
         if result is not None:
-            body = text[:raw_idx].rstrip()
             return (body if body.strip() else text), result
+        if body.strip():
+            # 末尾裸 JSON 解析失败（如值内含未转义引号）：仍剥离显示
+            return body, None
     return text, None
 
 
